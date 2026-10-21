@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from llm import is_configured, stream_doubao
+from llm import is_configured, stream_chat
 
 
 @dataclass
@@ -123,7 +123,7 @@ async def run_generation(job: GenerationJob, persist_chunk, settle) -> None:
     """
     try:
         if is_configured():
-            async for text in stream_doubao(
+            async for text in stream_chat(
                 job.prompt,
                 history=job.history,
                 should_cancel=lambda: job.cancel_event.is_set(),

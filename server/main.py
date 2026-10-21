@@ -31,7 +31,13 @@ from catalog import (
     resolve_system_prompt,
     scenario_image_expect,
 )
-from llm import provider_info, review_document_image
+from llm import (
+    clear_runtime_settings,
+    get_public_settings,
+    provider_info,
+    review_document_image,
+    update_runtime_settings,
+)
 from stream_engine import GenerationJob, cancel_job, get_job, register_job, run_generation
 
 
@@ -86,6 +92,33 @@ class ReviewImageBody(BaseModel):
     scenario_id: str = "general"
 
 
+class LlmSettingsBody(BaseModel):
+    """api_key 省略则保留原值；传空字符串可清除。"""
+
+    provider: str = "doubao"
+    api_key: Optional[str] = None
+    model: str = ""
+    vision_model: str = ""
+    base_url: str = ""
+
+
+class CreateReminderBody(BaseModel):
+    category: str = Field(..., pattern="^(medicine|pet)$")
+    title: str = Field(..., min_length=1, max_length=120)
+    due_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    note: str = Field("", max_length=500)
+    notify_browser: bool = True
+
+
+class PatchReminderBody(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    due_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    note: Optional[str] = Field(None, max_length=500)
+    done: Optional[bool] = None
+    notify_browser: Optional[bool] = None
+    category: Optional[str] = Field(None, pattern="^(medicine|pet)$")
+
+
 def _sse(event: str, data: Dict[str, Any], event_id: Optional[int] = None) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     lines = []
@@ -103,9 +136,86 @@ async def health():
     return {"ok": True, **provider_info()}
 
 
+@app.get("/api/llm/settings")
+async def api_get_llm_settings():
+    """返回提供商列表与当前配置（Key 仅脱敏提示，不含明文）。"""
+    return get_public_settings()
+
+
+@app.put("/api/llm/settings")
+async def api_put_llm_settings(body: LlmSettingsBody):
+    """写入本机运行时配置；Key 只落盘到 server/data/，不回传明文。"""
+    payload = body.model_dump(exclude_unset=True)
+    return update_runtime_settings(payload)
+
+
+@app.delete("/api/llm/settings")
+async def api_clear_llm_settings():
+    """清除页面写入的运行时配置，回退到 .env / 演示模式。"""
+    clear_runtime_settings()
+    return get_public_settings()
+
+
 @app.get("/api/catalog")
 async def api_catalog():
     return list_catalog()
+
+
+@app.get("/api/reminders")
+async def api_list_reminders(
+    category: Optional[str] = Query(None),
+    include_done: bool = Query(False),
+):
+    if category and category not in db.REMINDER_CATEGORIES:
+        raise HTTPException(400, "category 须为 medicine 或 pet")
+    return await db.list_reminders(category=category, include_done=include_done)
+
+
+@app.get("/api/reminders/due")
+async def api_due_reminders(
+    today: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    within_days: int = Query(0, ge=0, le=30),
+):
+    """打开看板时拉取：今天及过期（within_days=0）或未来 N 天内。"""
+    from datetime import date
+
+    day = today or date.today().isoformat()
+    return {
+        "today": day,
+        "items": await db.list_due_reminders(day, within_days=within_days),
+    }
+
+
+@app.post("/api/reminders")
+async def api_create_reminder(body: CreateReminderBody):
+    return await db.create_reminder(
+        category=body.category,
+        title=body.title.strip(),
+        due_date=body.due_date,
+        note=(body.note or "").strip(),
+        notify_browser=body.notify_browser,
+    )
+
+
+@app.patch("/api/reminders/{reminder_id}")
+async def api_patch_reminder(reminder_id: str, body: PatchReminderBody):
+    data = body.model_dump(exclude_unset=True)
+    if "title" in data and data["title"] is not None:
+        data["title"] = data["title"].strip()
+    if "note" in data and data["note"] is not None:
+        data["note"] = data["note"].strip()
+    updated = await db.update_reminder(reminder_id, **data)
+    if not updated:
+        raise HTTPException(404, "提醒不存在")
+    return updated
+
+
+@app.delete("/api/reminders/{reminder_id}")
+async def api_delete_reminder(reminder_id: str):
+    ok = await db.delete_reminder(reminder_id)
+    if not ok:
+        raise HTTPException(404, "提醒不存在")
+    return {"ok": True}
 
 
 @app.post("/api/docs/review-image")

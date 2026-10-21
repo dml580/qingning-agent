@@ -13,6 +13,8 @@ interface Props {
   scenarioId: string
   moduleId: string
   allowUpload?: boolean
+  /** 未配置 API Key 时的演示模式 */
+  demoMode?: boolean
   onSend: (payload: {
     text: string
     imageBase64?: string
@@ -20,6 +22,8 @@ interface Props {
   }) => void | Promise<void>
   onCancel: () => void
 }
+
+type BannerKind = 'upload' | 'send' | 'network'
 
 type PendingImage = {
   previewUrl: string
@@ -53,6 +57,20 @@ async function fileToCompressedDataUrl(file: File): Promise<{
   return { dataUrl, base64, mime }
 }
 
+function classifySendError(message: string): BannerKind {
+  const m = message.toLowerCase()
+  if (
+    m.includes('fetch') ||
+    m.includes('network') ||
+    m.includes('failed to fetch') ||
+    m.includes('后端') ||
+    m.includes('连接')
+  ) {
+    return 'network'
+  }
+  return 'send'
+}
+
 export function InputArea({
   disabled,
   streaming,
@@ -60,13 +78,17 @@ export function InputArea({
   scenarioId,
   moduleId,
   allowUpload = true,
+  demoMode = false,
   onSend,
   onCancel,
 }: Props) {
   const [text, setText] = useState('')
   const [pending, setPending] = useState<PendingImage | null>(null)
   const [reviewing, setReviewing] = useState(false)
-  const [rejectMsg, setRejectMsg] = useState<string | null>(null)
+  const [banner, setBanner] = useState<{
+    kind: BannerKind
+    text: string
+  } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   function clearPending() {
@@ -90,13 +112,13 @@ export function InputArea({
       await onSend(payload)
       setText('')
       clearPending()
-      setRejectMsg(null)
+      setBanner(null)
     } catch (err) {
-      setRejectMsg(
+      const text =
         err instanceof Error
           ? err.message
-          : '发送失败，请检查图片是否为相关文书照片。',
-      )
+          : '发送失败，请检查网络或后端是否在运行。'
+      setBanner({ kind: classifySendError(text), text })
     }
   }
 
@@ -109,9 +131,12 @@ export function InputArea({
 
   async function onPickFile(file: File | null) {
     if (!file || disabled || streaming) return
-    setRejectMsg(null)
+    setBanner(null)
     if (!file.type.startsWith('image/')) {
-      setRejectMsg('请选择图片文件（JPG / PNG / WebP）。')
+      setBanner({
+        kind: 'upload',
+        text: '请选择图片文件（JPG / PNG / WebP）。',
+      })
       return
     }
     setReviewing(true)
@@ -124,10 +149,12 @@ export function InputArea({
         scenarioId,
       })
       if (!review.ok || !review.related) {
-        setRejectMsg(
-          review.reason ||
+        setBanner({
+          kind: 'upload',
+          text:
+            review.reason ||
             '这张图看起来不是相关文书照片，请上传合同/协议/通知等文书的照片或扫描件。',
-        )
+        })
         clearPending()
         return
       }
@@ -137,13 +164,16 @@ export function InputArea({
         base64,
         mime,
       })
-      setRejectMsg(null)
+      setBanner(null)
     } catch (err) {
-      setRejectMsg(
+      const text =
         err instanceof Error
           ? err.message
-          : '图片审核失败，请稍后再试或改用粘贴文本。',
-      )
+          : '图片审核失败，请稍后再试或改用粘贴文本。'
+      setBanner({
+        kind: text.toLowerCase().includes('fetch') ? 'network' : 'upload',
+        text,
+      })
       clearPending()
     } finally {
       setReviewing(false)
@@ -186,19 +216,34 @@ export function InputArea({
         </div>
       )}
 
-      {rejectMsg && (
-        <div className="upload-reject-banner" role="alert">
+      {banner && (
+        <div
+          className={`upload-reject-banner kind-${banner.kind}`}
+          role="alert"
+        >
           <div className="upload-reject-banner-inner">
-            <div className="upload-reject-title">图片未通过审核，上传失败</div>
-            <p className="upload-reject-text">{rejectMsg}</p>
+            <div className="upload-reject-title">
+              {banner.kind === 'upload'
+                ? '图片未通过审核，上传失败'
+                : banner.kind === 'network'
+                  ? '网络或后端异常'
+                  : '发送失败'}
+            </div>
+            <p className="upload-reject-text">{banner.text}</p>
             <p className="upload-reject-tip">
-              请上传与当前模版相关的文书照片（合同、协议、通知、清单等），不要上传自拍、风景、表情包等无关图片。
+              {banner.kind === 'upload'
+                ? '请上传与当前模版相关的文书照片（合同、协议、通知、清单等），不要上传自拍、风景、表情包等无关图片。'
+                : banner.kind === 'network'
+                  ? '请确认 server 已启动（默认 :8000），并检查浏览器网络；配置好 Key 后需重启后端。'
+                  : demoMode
+                    ? '当前为演示模式时仍可发送，但回复为占位。若需真实分析，请配置 server/.env 中的 API Key。'
+                    : '可稍后重试；若刚中断过流式输出，也可对失败消息点「重试」。'}
             </p>
           </div>
           <button
             type="button"
             className="upload-reject-close"
-            onClick={() => setRejectMsg(null)}
+            onClick={() => setBanner(null)}
           >
             知道了
           </button>

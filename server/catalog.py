@@ -1,8 +1,8 @@
 """
 青柠 · 产品目录：大模块 → 场景模版 → 系统提示词。
 
-当前上线：生活文书（docs）
-预留：生活提醒（reminders）— 用药 / 宠物等，前端可展示「即将开放」
+当前上线：生活文书（docs）、生活提醒（reminders）
+提醒：本机看板 + 可选浏览器桌面通知（不依赖手机推送）
 """
 
 from __future__ import annotations
@@ -128,19 +128,19 @@ MODULES: List[Dict[str, Any]] = [
         "id": "reminders",
         "name": "生活提醒",
         "name_en": "Reminders",
-        "blurb": "用药、宠物等家庭提醒（即将开放）",
-        "status": "coming_soon",
+        "blurb": "药箱过期与宠物补给：打开即见，可选电脑通知",
+        "status": "available",
         "scenarios": [
             {
                 "id": "medicine",
                 "name": "家庭药箱",
-                "blurb": "说明书摘要、过期提醒（规划中）",
+                "blurb": "药品名称与过期日（不提供儿童剂量建议）",
                 "placeholder": "",
             },
             {
                 "id": "pet",
                 "name": "宠物补给",
-                "blurb": "粮耗估算与复购提醒（规划中）",
+                "blurb": "粮/用品复购或用尽提醒",
                 "placeholder": "",
             },
         ],

@@ -1,11 +1,11 @@
 """
-豆包（火山方舟）流式对话 + 文书图片审核。
+多提供商 LLM（OpenAI 兼容 Chat Completions）+ 文书图片审核。
 
-环境变量：
-  ARK_API_KEY        必填才走真模型，否则回退演示文案
-  ARK_MODEL          推理接入点 ID 或模型名
-  ARK_VISION_MODEL   可选，图片审核/读图专用；默认与 ARK_MODEL 相同
-  ARK_BASE_URL       默认 https://ark.cn-beijing.volces.com/api/v3
+配置优先级：页面「模型设置」写入的本机运行时文件 > 环境变量（.env）。
+API Key 只存在本机（.env 或 server/data/llm_runtime.json），接口对外只返回脱敏提示。
+
+环境变量（默认豆包）：
+  ARK_API_KEY / ARK_MODEL / ARK_VISION_MODEL / ARK_BASE_URL
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 import httpx
@@ -24,8 +26,12 @@ try:
 except ImportError:
     pass
 
-DEFAULT_BASE = "https://ark.cn-beijing.volces.com/api/v3"
-DEFAULT_MODEL = "doubao-seed-2-0-lite-260428"
+DATA_DIR = Path(__file__).parent / "data"
+RUNTIME_PATH = DATA_DIR / "llm_runtime.json"
+_runtime_lock = threading.Lock()
+
+DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_ARK_MODEL = "doubao-seed-2-0-lite-260428"
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是「青柠」生活文书助手。回答准确、简洁、有条理。"
@@ -34,36 +40,234 @@ DEFAULT_SYSTEM_PROMPT = (
 
 ContentPart = Union[str, List[Dict[str, Any]]]
 
+# 预设提供商（均走 OpenAI 兼容 /chat/completions）
+PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "doubao": {
+        "id": "doubao",
+        "label": "豆包（火山方舟）",
+        "default_base_url": DEFAULT_ARK_BASE,
+        "default_model": DEFAULT_ARK_MODEL,
+        "hint": "模型名一般填推理接入点 ID（ep-xxxx）",
+        "docs_url": "https://console.volcengine.com/ark",
+    },
+    "deepseek": {
+        "id": "deepseek",
+        "label": "DeepSeek",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "default_model": "deepseek-chat",
+        "hint": "开放平台创建 API Key 后填写",
+        "docs_url": "https://platform.deepseek.com/",
+    },
+    "openai": {
+        "id": "openai",
+        "label": "OpenAI",
+        "default_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "hint": "需可访问 OpenAI；读图请选支持视觉的模型",
+        "docs_url": "https://platform.openai.com/",
+    },
+    "siliconflow": {
+        "id": "siliconflow",
+        "label": "硅基流动",
+        "default_base_url": "https://api.siliconflow.cn/v1",
+        "default_model": "deepseek-ai/DeepSeek-V3",
+        "hint": "OpenAI 兼容；模型名以控制台为准",
+        "docs_url": "https://cloud.siliconflow.cn/",
+    },
+    "custom": {
+        "id": "custom",
+        "label": "自定义（OpenAI 兼容）",
+        "default_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "hint": "填写兼容 /v1/chat/completions 的 Base URL",
+        "docs_url": "",
+    },
+}
 
-def get_config() -> Dict[str, Optional[str]]:
-    model = (os.getenv("ARK_MODEL") or DEFAULT_MODEL).strip()
+
+def list_providers() -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": p["id"],
+            "label": p["label"],
+            "default_base_url": p["default_base_url"],
+            "default_model": p["default_model"],
+            "hint": p["hint"],
+            "docs_url": p.get("docs_url") or "",
+        }
+        for p in PROVIDERS.values()
+    ]
+
+
+def _env_defaults() -> Dict[str, Optional[str]]:
+    model = (os.getenv("ARK_MODEL") or DEFAULT_ARK_MODEL).strip()
     vision = (os.getenv("ARK_VISION_MODEL") or model).strip()
+    key = (os.getenv("ARK_API_KEY") or "").strip() or None
     return {
-        "api_key": (os.getenv("ARK_API_KEY") or "").strip() or None,
+        "provider": "doubao",
+        "api_key": key,
         "model": model,
         "vision_model": vision,
-        "base_url": (os.getenv("ARK_BASE_URL") or DEFAULT_BASE).rstrip("/"),
+        "base_url": (os.getenv("ARK_BASE_URL") or DEFAULT_ARK_BASE).rstrip("/"),
+        "source": "env" if key else "none",
+    }
+
+
+def _read_runtime() -> Optional[Dict[str, Any]]:
+    if not RUNTIME_PATH.exists():
+        return None
+    try:
+        with _runtime_lock:
+            raw = RUNTIME_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_runtime(data: Dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    with _runtime_lock:
+        tmp = RUNTIME_PATH.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(RUNTIME_PATH)
+
+
+def clear_runtime_settings() -> None:
+    with _runtime_lock:
+        if RUNTIME_PATH.exists():
+            RUNTIME_PATH.unlink()
+
+
+def get_config() -> Dict[str, Optional[str]]:
+    """合并环境变量与本机运行时配置；运行时优先。"""
+    base = _env_defaults()
+    rt = _read_runtime()
+    if not rt:
+        return base
+
+    provider = str(rt.get("provider") or "doubao").strip() or "doubao"
+    if provider not in PROVIDERS:
+        provider = "custom"
+    preset = PROVIDERS[provider]
+
+    api_key = (rt.get("api_key") or "").strip() or None
+    model = (rt.get("model") or "").strip() or preset["default_model"]
+    vision = (rt.get("vision_model") or "").strip() or model
+    base_url = (rt.get("base_url") or "").strip() or preset["default_base_url"]
+
+    # 运行时未填 Key 时，同为豆包则回退 .env Key，方便「只改模型」
+    if not api_key and provider == "doubao" and base.get("api_key"):
+        api_key = base["api_key"]
+
+    return {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+        "vision_model": vision,
+        "base_url": base_url.rstrip("/"),
+        "source": "runtime",
     }
 
 
 def is_configured() -> bool:
-    return bool(get_config()["api_key"])
+    return bool(get_config().get("api_key"))
+
+
+def _mask_key(key: Optional[str]) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "••••"
+    return f"{key[:3]}••••{key[-4:]}"
 
 
 def provider_info() -> Dict[str, Any]:
     cfg = get_config()
+    pid = cfg.get("provider") or "demo"
+    configured = bool(cfg.get("api_key"))
+    if not configured:
+        return {
+            "provider": "demo",
+            "provider_label": "演示模式",
+            "model": None,
+            "configured": False,
+            "source": cfg.get("source") or "none",
+        }
+    meta = PROVIDERS.get(str(pid)) or PROVIDERS["custom"]
     return {
-        "provider": "doubao" if cfg["api_key"] else "demo",
-        "model": cfg["model"] if cfg["api_key"] else None,
-        "configured": bool(cfg["api_key"]),
+        "provider": pid,
+        "provider_label": meta["label"],
+        "model": cfg.get("model"),
+        "configured": True,
+        "source": cfg.get("source") or "env",
     }
 
 
-def _data_url(image_base64: str, mime: str = "image/jpeg") -> str:
-    raw = image_base64.strip()
-    if raw.startswith("data:"):
-        return raw
-    return f"data:{mime};base64,{raw}"
+def get_public_settings() -> Dict[str, Any]:
+    cfg = get_config()
+    info = provider_info()
+    return {
+        "providers": list_providers(),
+        "current": {
+            "provider": cfg.get("provider") or "doubao",
+            "provider_label": info.get("provider_label"),
+            "model": cfg.get("model") or "",
+            "vision_model": cfg.get("vision_model") or "",
+            "base_url": cfg.get("base_url") or "",
+            "configured": bool(cfg.get("api_key")),
+            "api_key_set": bool(cfg.get("api_key")),
+            "api_key_hint": _mask_key(cfg.get("api_key")),
+            "source": cfg.get("source") or "none",
+        },
+        "privacy_note": (
+            "API Key 只保存在本机后端（环境变量或 server/data/llm_runtime.json），"
+            "不会写入前端仓库；请求由本机发出。文书内容仍会发往你所选的模型服务商。"
+        ),
+    }
+
+
+def update_runtime_settings(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    更新本机运行时配置。
+    api_key: 省略或 null = 保留原 Key；空字符串 = 清除 Key；非空 = 写入新 Key。
+    """
+    provider = str(body.get("provider") or "doubao").strip() or "doubao"
+    if provider not in PROVIDERS:
+        provider = "custom"
+    preset = PROVIDERS[provider]
+
+    prev = _read_runtime() or {}
+    # 若尚无运行时文件，用当前生效配置作为底（含 .env）
+    effective = get_config()
+
+    if "api_key" not in body or body.get("api_key") is None:
+        api_key = (prev.get("api_key") or effective.get("api_key") or "") or ""
+        if isinstance(api_key, str):
+            api_key = api_key.strip()
+        else:
+            api_key = ""
+    else:
+        api_key = str(body.get("api_key") or "").strip()
+
+    model = str(body.get("model") or "").strip() or preset["default_model"]
+    vision = str(body.get("vision_model") or "").strip() or model
+    base_url = (
+        str(body.get("base_url") or "").strip() or preset["default_base_url"]
+    ).rstrip("/")
+
+    payload = {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+        "vision_model": vision,
+        "base_url": base_url,
+    }
+    _write_runtime(payload)
+    return get_public_settings()
 
 
 def build_chat_messages(
@@ -94,37 +298,37 @@ def build_chat_messages(
     if not messages or messages[-1].get("role") != "user":
         messages.append({"role": "user", "content": user_content})
     else:
-        # Replace last user if identical text-only; otherwise append
         last = messages[-1].get("content")
         if last == prompt and not image_data_url:
             pass
-        elif (
-            isinstance(last, str)
-            and last == prompt
-            and image_data_url
-        ):
+        elif isinstance(last, str) and last == prompt and image_data_url:
             messages[-1] = {"role": "user", "content": user_content}
         elif not any(
-            m.get("role") == "user" and m.get("content") == prompt for m in messages[-3:]
+            m.get("role") == "user" and m.get("content") == prompt
+            for m in messages[-3:]
         ):
             messages.append({"role": "user", "content": user_content})
     return messages
 
 
-async def stream_doubao(
+def _data_url(image_base64: str, mime: str = "image/jpeg") -> str:
+    raw = image_base64.strip()
+    if raw.startswith("data:"):
+        return raw
+    return f"data:{mime};base64,{raw}"
+
+
+async def stream_chat(
     prompt: str,
     history: Optional[List[Dict[str, str]]] = None,
     should_cancel=None,
     system_prompt: Optional[str] = None,
     image_data_url: Optional[str] = None,
 ) -> AsyncIterator[str]:
-    """
-    Yield text deltas from Ark chat/completions SSE.
-    should_cancel: optional callable returning bool.
-    """
+    """Yield text deltas from OpenAI-compatible chat/completions SSE."""
     cfg = get_config()
     if not cfg["api_key"]:
-        raise RuntimeError("ARK_API_KEY 未配置")
+        raise RuntimeError("未配置 API Key，请在「模型设置」或 server/.env 中填写")
 
     model = cfg["vision_model"] if image_data_url else cfg["model"]
     url = f"{cfg['base_url']}/chat/completions"
@@ -143,11 +347,14 @@ async def stream_doubao(
         "Content-Type": "application/json",
     }
 
+    label = PROVIDERS.get(str(cfg.get("provider")), {}).get("label") or "模型"
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode("utf-8", errors="replace")
-                raise RuntimeError(f"豆包 API {resp.status_code}: {body[:500]}")
+                # 勿把完整响应（可能含敏感信息）打太长
+                raise RuntimeError(f"{label} API {resp.status_code}: {body[:400]}")
 
             buffer = ""
             async for raw in resp.aiter_text():
@@ -177,6 +384,10 @@ async def stream_doubao(
                         yield text
 
 
+# 兼容旧导入名
+stream_doubao = stream_chat
+
+
 def _parse_review_json(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
     try:
@@ -189,7 +400,10 @@ def _parse_review_json(text: str) -> Dict[str, Any]:
             return json.loads(m.group(0))
         except json.JSONDecodeError:
             pass
-    return {"related": False, "reason": "审核结果无法解析，请换一张更清晰的文书照片再试"}
+    return {
+        "related": False,
+        "reason": "审核结果无法解析，请换一张更清晰的文书照片再试",
+    }
 
 
 async def review_document_image(
@@ -200,16 +414,13 @@ async def review_document_image(
     expect_desc: str,
     mime: str = "image/jpeg",
 ) -> Dict[str, Any]:
-    """
-    视觉审核：是否为与当前文书模版相关的照片。
-    返回 { ok, related, reason, what_you_see? }
-    """
+    """视觉审核：是否为与当前文书模版相关的照片。"""
     cfg = get_config()
     if not cfg["api_key"]:
         return {
             "ok": False,
             "related": False,
-            "reason": "未配置豆包密钥，无法审核图片。请先配置 ARK_API_KEY，或改用粘贴文本。",
+            "reason": "未配置 API Key，无法审核图片。请在「模型设置」中填写，或改用粘贴文本。",
         }
 
     data_url = _data_url(image_base64, mime)

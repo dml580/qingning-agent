@@ -45,6 +45,21 @@ async def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_messages_session
                 ON messages(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                due_date TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0,
+                notify_browser INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_due
+                ON reminders(due_date, done, category);
             """
         )
         # Migrate older DBs that lack module columns.
@@ -327,3 +342,178 @@ async def settle_message(
         cur = await db.execute("SELECT * FROM messages WHERE id = ?", (message_id,))
         row = await cur.fetchone()
     return _row_to_message(dict(row)) if row else None
+
+
+# —— Life reminders (medicine / pet) ——
+
+REMINDER_CATEGORIES = frozenset({"medicine", "pet"})
+
+
+def _reminder_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "category": row["category"],
+        "title": row["title"],
+        "note": row.get("note") or "",
+        "due_date": row["due_date"],
+        "done": bool(row.get("done")),
+        "notify_browser": bool(row.get("notify_browser", 1)),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def list_reminders(
+    category: Optional[str] = None,
+    include_done: bool = False,
+) -> List[Dict[str, Any]]:
+    clauses = []
+    params: List[Any] = []
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    if not include_done:
+        clauses.append("done = 0")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT * FROM reminders
+            {where}
+            ORDER BY done ASC, due_date ASC, created_at DESC
+            """,
+            params,
+        )
+        rows = await cur.fetchall()
+    return [_reminder_dict(dict(r)) for r in rows]
+
+
+async def list_due_reminders(today: str, within_days: int = 0) -> List[Dict[str, Any]]:
+    """due_date <= today+within_days, not done. within_days=0 → 仅今天及过期."""
+    # due_date is YYYY-MM-DD; lexical compare works.
+    from datetime import datetime, timedelta
+
+    end = (
+        datetime.strptime(today, "%Y-%m-%d") + timedelta(days=max(0, within_days))
+    ).strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM reminders
+            WHERE done = 0 AND due_date <= ?
+            ORDER BY due_date ASC
+            """,
+            (end,),
+        )
+        rows = await cur.fetchall()
+    return [_reminder_dict(dict(r)) for r in rows]
+
+
+async def create_reminder(
+    *,
+    category: str,
+    title: str,
+    due_date: str,
+    note: str = "",
+    notify_browser: bool = True,
+) -> Dict[str, Any]:
+    rid = new_id("rem")
+    ts = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO reminders
+            (id, category, title, note, due_date, done, notify_browser, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                rid,
+                category,
+                title,
+                note,
+                due_date,
+                1 if notify_browser else 0,
+                ts,
+                ts,
+            ),
+        )
+        await db.commit()
+    return {
+        "id": rid,
+        "category": category,
+        "title": title,
+        "note": note,
+        "due_date": due_date,
+        "done": False,
+        "notify_browser": notify_browser,
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+
+async def get_reminder(reminder_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+        )
+        row = await cur.fetchone()
+    return _reminder_dict(dict(row)) if row else None
+
+
+async def update_reminder(
+    reminder_id: str,
+    *,
+    title: Optional[str] = None,
+    note: Optional[str] = None,
+    due_date: Optional[str] = None,
+    done: Optional[bool] = None,
+    notify_browser: Optional[bool] = None,
+    category: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    existing = await get_reminder(reminder_id)
+    if not existing:
+        return None
+    next_title = title if title is not None else existing["title"]
+    next_note = note if note is not None else existing["note"]
+    next_due = due_date if due_date is not None else existing["due_date"]
+    next_done = int(done) if done is not None else int(existing["done"])
+    next_notify = (
+        int(notify_browser)
+        if notify_browser is not None
+        else int(existing["notify_browser"])
+    )
+    next_cat = category if category is not None else existing["category"]
+    ts = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE reminders
+            SET title = ?, note = ?, due_date = ?, done = ?,
+                notify_browser = ?, category = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                next_title,
+                next_note,
+                next_due,
+                next_done,
+                next_notify,
+                next_cat,
+                ts,
+                reminder_id,
+            ),
+        )
+        await db.commit()
+    return await get_reminder(reminder_id)
+
+
+async def delete_reminder(reminder_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM reminders WHERE id = ?", (reminder_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0

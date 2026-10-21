@@ -35,12 +35,15 @@ interface WorkbenchValue {
   messages: Message[]
   loading: boolean
   bootError: string | null
+  actionError: string | null
+  clearActionError: () => void
   health: HealthInfo | null
   activeAssistantId: string | null
   isStreaming: boolean
   streamStatus: MessageStatus | 'idle'
   moduleAvailable: boolean
   bootstrap: () => Promise<void>
+  refreshHealth: () => Promise<void>
   setModule: (moduleId: string) => Promise<void>
   setScenario: (scenarioId: string) => Promise<void>
   selectSession: (id: string) => Promise<void>
@@ -66,6 +69,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [bootError, setBootError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthInfo | null>(null)
   const [activeAssistantId, setActiveAssistantId] = useState<string | null>(
     null,
@@ -240,31 +244,51 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const clearActionError = useCallback(() => setActionError(null), [])
+
   const createSession = useCallback(async () => {
     if (!moduleAvailable) return
-    const s = await api.createSession(
-      '新会话',
-      activeModuleIdRef.current,
-      activeScenarioIdRef.current,
-    )
-    setSessions((prev) => [s, ...prev])
-    await selectSession(s.id)
+    setActionError(null)
+    try {
+      const s = await api.createSession(
+        '新会话',
+        activeModuleIdRef.current,
+        activeScenarioIdRef.current,
+      )
+      setSessions((prev) => [s, ...prev])
+      await selectSession(s.id)
+    } catch (e) {
+      setActionError(
+        e instanceof Error
+          ? e.message
+          : '无法新建会话，请检查后端是否在运行。',
+      )
+    }
   }, [moduleAvailable, selectSession])
 
   const removeSession = useCallback(
     async (id: string) => {
-      await api.deleteSession(id)
-      setSessions((prev) => {
-        const next = prev.filter((s) => s.id !== id)
-        if (currentSessionIdRef.current === id) {
-          streamRef.current.stop()
-          setActiveAssistantId(null)
-          setCurrentSessionId(null)
-          setMessages([])
-          if (next[0]) void selectSession(next[0].id)
-        }
-        return next
-      })
+      setActionError(null)
+      try {
+        await api.deleteSession(id)
+        setSessions((prev) => {
+          const next = prev.filter((s) => s.id !== id)
+          if (currentSessionIdRef.current === id) {
+            streamRef.current.stop()
+            setActiveAssistantId(null)
+            setCurrentSessionId(null)
+            setMessages([])
+            if (next[0]) void selectSession(next[0].id)
+          }
+          return next
+        })
+      } catch (e) {
+        setActionError(
+          e instanceof Error
+            ? e.message
+            : '删除失败，会话可能仍留在本机数据库中。',
+        )
+      }
     },
     [selectSession],
   )
@@ -283,30 +307,40 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
         !moduleAvailable
       )
         return
-      if (!sid) {
-        const s = await api.createSession(
-          '新会话',
+      setActionError(null)
+      try {
+        if (!sid) {
+          const s = await api.createSession(
+            '新会话',
+            activeModuleIdRef.current,
+            activeScenarioIdRef.current,
+          )
+          setSessions((prev) => [s, ...prev])
+          sid = s.id
+          setCurrentSessionId(sid)
+          setMessages([])
+        }
+        const { user_message, assistant_message } = await api.sendMessage(
+          sid,
+          text || (payload.imageBase64 ? '请根据上传的文书照片进行分析' : ''),
           activeModuleIdRef.current,
           activeScenarioIdRef.current,
+          payload.imageBase64
+            ? { base64: payload.imageBase64, mime: payload.imageMime }
+            : undefined,
         )
-        setSessions((prev) => [s, ...prev])
-        sid = s.id
-        setCurrentSessionId(sid)
-        setMessages([])
+        upsertMessage(user_message)
+        upsertMessage({ ...assistant_message, lastSeq: -1 })
+        attachStream(sid, assistant_message.id, 0)
+        await refreshSessions()
+      } catch (e) {
+        const msg =
+          e instanceof Error
+            ? e.message
+            : '发送失败，请检查网络或后端是否在运行。'
+        setActionError(msg)
+        throw e instanceof Error ? e : new Error(msg)
       }
-      const { user_message, assistant_message } = await api.sendMessage(
-        sid,
-        text || (payload.imageBase64 ? '请根据上传的文书照片进行分析' : ''),
-        activeModuleIdRef.current,
-        activeScenarioIdRef.current,
-        payload.imageBase64
-          ? { base64: payload.imageBase64, mime: payload.imageMime }
-          : undefined,
-      )
-      upsertMessage(user_message)
-      upsertMessage({ ...assistant_message, lastSeq: -1 })
-      attachStream(sid, assistant_message.id, 0)
-      await refreshSessions()
     },
     [attachStream, moduleAvailable, refreshSessions, upsertMessage],
   )
@@ -315,26 +349,56 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
     const sid = currentSessionIdRef.current
     const mid = activeAssistantIdRef.current
     if (!sid || !mid) return
-    const res = await api.cancel(sid, mid)
-    streamRef.current.stop()
-    if (res.message) upsertMessage(res.message)
-    else patchMessage(mid, { status: 'cancelled' })
-    setActiveAssistantId(null)
+    try {
+      const res = await api.cancel(sid, mid)
+      streamRef.current.stop()
+      if (res.message) upsertMessage(res.message)
+      else patchMessage(mid, { status: 'cancelled' })
+      setActiveAssistantId(null)
+    } catch (e) {
+      streamRef.current.stop()
+      patchMessage(mid, { status: 'cancelled' })
+      setActiveAssistantId(null)
+      setActionError(
+        e instanceof Error
+          ? e.message
+          : '中断请求失败，本地已按取消处理。',
+      )
+    }
   }, [patchMessage, upsertMessage])
 
   const retry = useCallback(
     async (failedMessageId: string) => {
       const sid = currentSessionIdRef.current
       if (!sid || isStreamingRef.current) return
-      const { assistant_message } = await api.retry(sid, failedMessageId, {
-        moduleId: activeModuleIdRef.current,
-        scenarioId: activeScenarioIdRef.current,
-      })
-      upsertMessage({ ...assistant_message, lastSeq: -1 })
-      attachStream(sid, assistant_message.id, 0)
+      setActionError(null)
+      try {
+        const { assistant_message } = await api.retry(sid, failedMessageId, {
+          moduleId: activeModuleIdRef.current,
+          scenarioId: activeScenarioIdRef.current,
+        })
+        upsertMessage({ ...assistant_message, lastSeq: -1 })
+        attachStream(sid, assistant_message.id, 0)
+      } catch (e) {
+        const msg =
+          e instanceof Error
+            ? e.message
+            : '重试失败，请检查网络或 API Key 配置。'
+        setActionError(msg)
+        throw e instanceof Error ? e : new Error(msg)
+      }
     },
     [attachStream, upsertMessage],
   )
+
+  const refreshHealth = useCallback(async () => {
+    try {
+      const h = await api.health()
+      setHealth(h)
+    } catch {
+      /* ignore; banner/boot handles hard failures */
+    }
+  }, [])
 
   const bootstrap = useCallback(async () => {
     setLoading(true)
@@ -372,12 +436,15 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       messages,
       loading,
       bootError,
+      actionError,
+      clearActionError,
       health,
       activeAssistantId,
       isStreaming,
       streamStatus: stream.status,
       moduleAvailable: !!moduleAvailable,
       bootstrap,
+      refreshHealth,
       setModule,
       setScenario,
       selectSession,
@@ -400,12 +467,15 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       messages,
       loading,
       bootError,
+      actionError,
+      clearActionError,
       health,
       activeAssistantId,
       isStreaming,
       stream.status,
       moduleAvailable,
       bootstrap,
+      refreshHealth,
       setModule,
       setScenario,
       selectSession,

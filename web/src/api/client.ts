@@ -41,14 +41,121 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface HealthInfo {
   ok: boolean
   provider: 'doubao' | 'demo' | string
+  provider_label?: string
   model: string | null
   configured: boolean
+  source?: string
+}
+
+export interface LlmProviderInfo {
+  id: string
+  label: string
+  default_base_url: string
+  default_model: string
+  hint: string
+  docs_url: string
+}
+
+export interface LlmSettingsResponse {
+  providers: LlmProviderInfo[]
+  privacy_note: string
+  current: {
+    provider: string
+    provider_label?: string
+    model: string
+    vision_model: string
+    base_url: string
+    configured: boolean
+    api_key_set: boolean
+    api_key_hint: string
+    source: string
+  }
+}
+
+export interface ReminderItem {
+  id: string
+  category: 'medicine' | 'pet' | string
+  title: string
+  note: string
+  due_date: string
+  done: boolean
+  notify_browser: boolean
+  created_at: number
+  updated_at: number
 }
 
 export const api = {
   health: () => request<HealthInfo>('/api/health'),
 
+  getLlmSettings: () => request<LlmSettingsResponse>('/api/llm/settings'),
+
+  putLlmSettings: (body: {
+    provider: string
+    model: string
+    vision_model?: string
+    base_url?: string
+    api_key?: string
+  }) =>
+    request<LlmSettingsResponse>('/api/llm/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  clearLlmSettings: () =>
+    request<LlmSettingsResponse>('/api/llm/settings', { method: 'DELETE' }),
+
   catalog: () => request<Catalog>('/api/catalog'),
+
+  listReminders: (opts?: { category?: string; includeDone?: boolean }) => {
+    const q = new URLSearchParams()
+    if (opts?.category) q.set('category', opts.category)
+    if (opts?.includeDone) q.set('include_done', 'true')
+    const qs = q.toString()
+    return request<ReminderItem[]>(
+      qs ? `/api/reminders?${qs}` : '/api/reminders',
+    )
+  },
+
+  dueReminders: (opts?: { today?: string; withinDays?: number }) => {
+    const q = new URLSearchParams()
+    if (opts?.today) q.set('today', opts.today)
+    if (opts?.withinDays != null) q.set('within_days', String(opts.withinDays))
+    const qs = q.toString()
+    return request<{ today: string; items: ReminderItem[] }>(
+      qs ? `/api/reminders/due?${qs}` : '/api/reminders/due',
+    )
+  },
+
+  createReminder: (body: {
+    category: string
+    title: string
+    due_date: string
+    note?: string
+    notify_browser?: boolean
+  }) =>
+    request<ReminderItem>('/api/reminders', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  patchReminder: (
+    id: string,
+    body: Partial<{
+      title: string
+      due_date: string
+      note: string
+      done: boolean
+      notify_browser: boolean
+      category: string
+    }>,
+  ) =>
+    request<ReminderItem>(`/api/reminders/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  deleteReminder: (id: string) =>
+    request<{ ok: boolean }>(`/api/reminders/${id}`, { method: 'DELETE' }),
 
   listSessions: (moduleId?: string) =>
     request<Session[]>(
