@@ -23,7 +23,7 @@ const CYCLE: { phase: Phase; ms: number }[] = [
 ]
 
 /** 抠图更新后改版本号，避免浏览器缓存旧帧 */
-const ASSET_VER = '20'
+const ASSET_VER = '21'
 
 function frameSrc(kind: 'blink' | 'sway', index: number) {
   const n = String(index + 1).padStart(2, '0')

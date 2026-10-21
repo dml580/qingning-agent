@@ -33,6 +33,7 @@ web/.vite/
 .venv-rembg/
 web/public/mascot/_preview/
 web/public/mascot/_backup_sway/
+web/public/mascot/**/*.broken.png
 web/public/mascot/_check.jpg
 web/public/mascot_*.jpg
 *.log
