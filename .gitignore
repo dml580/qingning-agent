@@ -1,0 +1,39 @@
+# secrets
+server/.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+venv/
+*.sqlite
+*.db
+server/data/
+server/*.db
+
+# Node / Vite
+web/node_modules/
+web/dist/
+web/.vite/
+*.local
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# local tooling / temp
+.venv-rembg/
+web/public/mascot/_preview/
+web/public/mascot/_backup_sway/
+web/public/mascot/_check.jpg
+web/public/mascot_*.jpg
+*.log
+.cache/

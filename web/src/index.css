@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap');
+
+:root {
+  --bg: #07090c;
+  --bg-elevated: #0d1117;
+  --panel: #0f141b;
+  --panel-2: #151b24;
+  --border: #243041;
+  --border-soft: #1a2330;
+  --text: #edf2f7;
+  --muted: #8b97a8;
+  --faint: #5c6b7c;
+  --hover: #182030;
+  --active: #1c2a3d;
+  --accent: #c8f542;
+  --accent-soft: #9bc41f;
+  --accent-ink: #142000;
+  --accent-glow: rgba(200, 245, 66, 0.16);
+  --danger: #ff6b7a;
+  --ok: #5ddea2;
+  --warn: #f0c35a;
+  --user: #1a2740;
+  --assistant: #121820;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --radius: 16px;
+  --font: 'Noto Sans SC', system-ui, sans-serif;
+  --display: 'Syne', 'Noto Sans SC', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  font-family: var(--font);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a3545;
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4a5e;
+}
