@@ -84,7 +84,7 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 | 豆包 401/403 | Key 或接入点 ID 错误；`ARK_MODEL` 一般是 `ep-` 开头 |
 | 改了 `.env` 仍用旧模型 | 若用过「模型设置」，运行时文件优先；可在设置里「恢复为环境变量」 |
 
-密钥与 `server/data/` **不要提交 Git**。仓库说明见私有库 [dml580/qingning-workbench](https://github.com/dml580/qingning-workbench)。
+密钥与 `server/data/` **不要提交 Git**。仓库：[dml580/qingning-workbench](https://github.com/dml580/qingning-workbench)。
 
 ## 工程要点
 
@@ -93,13 +93,22 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 3. 长内容虚拟列表 + 对比面板（见 `docs/virtual-list-compare.md`）。
 4. 助手消息可复制全文 / 导出 Markdown。
 
+## 许可
+
+本仓库源码以 **[Apache License 2.0](LICENSE)** 发布（见 `LICENSE`、`NOTICE`）。
+
+- 保留作者版权；再分发/修改须保留许可证与署名，并标明改动。
+- **不授予**「青柠」名称与吉祥物等标识的商标使用权。
+- 分析输出仅供参考，**不构成法律意见**；勿把真实隐私与 API Key 提交进仓库。
+
 ## 文档
 
 - [待办与路线图](docs/待办与路线图.md)
 - [面试话术](docs/面试话术.md)
+- [AI 前端演示检查清单](docs/AI前端-演示检查清单.md)
 - [虚拟列表对比截图](docs/virtual-list-compare.md)
 - [浏览器兼容](docs/浏览器兼容.md)
 
 ## 待办
 
-下一优先：公网部署，或五套模版提示词验收（阶段 D）。
+下一优先：公网部署；有真实合同时做评测回归。
