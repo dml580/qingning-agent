@@ -344,7 +344,7 @@ export function InputArea({
                     : placeholder ||
                       '粘贴前请先删掉隐私信息；也可上传已打码的文书照片'
               }
-              disabled={disabled || reviewing}
+              disabled={disabled || reviewing || streaming}
               rows={2}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}

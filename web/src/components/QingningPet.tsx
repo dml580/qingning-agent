@@ -93,10 +93,15 @@ function expandedPos(y?: number) {
   }
 }
 
+interface Props {
+  /** 双击打开侧边闲聊 */
+  onOpenChat?: () => void
+}
+
 /**
- * 桌宠青柠：默认贴右侧；点击展开并按 30s 周期动画；2 分钟无点击收回侧边。
+ * 桌宠青柠：默认贴右侧；单击展开动画；双击打开侧边闲聊；拖回或两分钟无操作贴边。
  */
-export function QingningPet() {
+export function QingningPet({ onOpenChat }: Props) {
   const [docked, setDocked] = useState(true)
   const [pos, setPos] = useState(() =>
     typeof window !== 'undefined' ? dockPos() : { x: 24, y: 24 },
@@ -233,10 +238,19 @@ export function QingningPet() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  const openChatFromPet = () => {
+    if (!dockedRef.current) bumpIdle()
+    else {
+      goExpand(pos.y)
+      bumpIdle()
+    }
+    onOpenChat?.()
+  }
+
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
 
-    // 贴边：点击展开，不进入拖拽
+    // 贴边：单击展开，不进入拖拽（双击另开会打开闲聊）
     if (dockedRef.current) {
       e.preventDefault()
       goExpand(pos.y)
@@ -331,14 +345,20 @@ export function QingningPet() {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onDoubleClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (movedRef.current) return
+        openChatFromPet()
+      }}
       onDragStart={(e) => e.preventDefault()}
-      onSelectStart={(e) => e.preventDefault()}
       role="img"
       aria-label={
         docked
-          ? '青柠桌宠，贴在右侧，点击展开'
-          : '青柠桌宠，可拖拽；拖到右侧或两分钟无操作会贴边'
+          ? '青柠桌宠，单击展开，双击打开闲聊'
+          : '青柠桌宠，可拖拽；双击打开闲聊；拖到右侧或两分钟无操作会贴边'
       }
+      title="单击展开 · 双击闲聊"
     >
       <img
         src={imgSrc}

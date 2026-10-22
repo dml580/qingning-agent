@@ -16,6 +16,8 @@ export interface Scenario {
   name: string
   blurb: string
   placeholder: string
+  /** 不在文书模版条 / 侧栏槽位展示（如桌宠闲聊） */
+  hidden?: boolean
 }
 
 export interface AppModule {
@@ -40,6 +42,13 @@ export interface Session {
   scenario_id: string
 }
 
+export interface RagMeta {
+  requested: boolean
+  enabled: boolean
+  reason?: string
+  chunks?: { id: number; score: number; preview: string }[]
+}
+
 export interface Message {
   id: string
   session_id: string
@@ -52,6 +61,8 @@ export interface Message {
   updated_at: number
   /** Client-only: last applied chunk seq for dedupe. */
   lastSeq?: number
+  /** Client-only: 本轮是否走了迷你 RAG（接口返回，不落库）。 */
+  rag?: RagMeta
 }
 
 export interface SessionDetail extends Session {

@@ -35,9 +35,11 @@ export function ScenarioBar({
     )
   }
 
+  const visible = module.scenarios.filter((s) => !s.hidden && s.id !== 'companion')
+
   return (
     <div className="scenario-bar" role="tablist" aria-label="文书模版">
-      {module.scenarios.map((s) => (
+      {visible.map((s) => (
         <button
           key={s.id}
           type="button"

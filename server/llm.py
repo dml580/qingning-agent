@@ -424,12 +424,28 @@ async def review_document_image(
         }
 
     data_url = _data_url(image_base64, mime)
-    system = (
-        "你是青柠 App 的图片审核员。只判断用户上传的图片是否为「生活文书相关」照片。"
-        "必须只输出一个 JSON 对象，不要 Markdown，不要其它文字。"
-        '格式：{"related":true或false,"reason":"给用户看的一句中文说明","what_you_see":"画面里大致是什么"}'
-    )
-    user_text = f"""当前用户选择的文书模版：「{scenario_name}」（id={scenario_id}）。
+    if scenario_id == "companion":
+        system = (
+            "你是青柠 App 闲聊场景的图片审核员。"
+            "必须只输出一个 JSON 对象，不要 Markdown，不要其它文字。"
+            '格式：{"related":true或false,"reason":"给用户看的一句中文说明","what_you_see":"画面里大致是什么"}'
+        )
+        user_text = f"""当前为桌宠闲聊（id=companion）。期望：{expect_desc}
+
+判定规则：
+1. related=true：能看清内容的日常照片、物品、单据、截图、文书等，可供闲聊讨论。
+2. related=false：完全空白、严重模糊无法辨认、纯色块、明显恶意/违法内容。
+3. 普通自拍、食物、风景若画面清晰，可 related=true。
+4. reason 简短可展示。
+
+请审核这张图片。"""
+    else:
+        system = (
+            "你是青柠 App 的图片审核员。只判断用户上传的图片是否为「生活文书相关」照片。"
+            "必须只输出一个 JSON 对象，不要 Markdown，不要其它文字。"
+            '格式：{"related":true或false,"reason":"给用户看的一句中文说明","what_you_see":"画面里大致是什么"}'
+        )
+        user_text = f"""当前用户选择的文书模版：「{scenario_name}」（id={scenario_id}）。
 本模版期望上传：{expect_desc}
 
 判定规则：
@@ -488,11 +504,19 @@ async def review_document_image(
     related = bool(parsed.get("related"))
     reason = str(parsed.get("reason") or "").strip()
     if related:
-        reason = reason or "已通过审核，可以发送分析。"
+        reason = reason or (
+            "已通过审核，可以发送。"
+            if scenario_id == "companion"
+            else "已通过审核，可以发送分析。"
+        )
     else:
         reason = reason or (
-            f"这张图看起来不是「{scenario_name}」相关的文书照片。"
-            "请上传合同/协议/通知等文书的照片或扫描件。"
+            "这张图无法用于闲聊（空白或无法辨认），请换一张更清晰的照片。"
+            if scenario_id == "companion"
+            else (
+                f"这张图看起来不是「{scenario_name}」相关的文书照片。"
+                "请上传合同/协议/通知等文书的照片或扫描件。"
+            )
         )
     return {
         "ok": related,

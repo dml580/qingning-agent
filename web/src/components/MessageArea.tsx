@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Message, MessageStatus } from '../types'
+import { AssistantMarkdown } from './AssistantMarkdown'
 import { GeneratingIndicator } from './GeneratingIndicator'
 import { PerfPanel } from './PerfPanel'
 import { VirtualLines, type LineMetrics } from './VirtualLines'
@@ -68,6 +69,7 @@ export function MessageArea({
   const [metrics, setMetrics] = useState<LineMetrics | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [retryError, setRetryError] = useState<string | null>(null)
+  const [showJumpBottom, setShowJumpBottom] = useState(false)
 
   const last = messages[messages.length - 1]
 
@@ -97,8 +99,18 @@ export function MessageArea({
   function onScrollList() {
     const el = scrollRef.current
     if (!el) return
-    stickBottomRef.current =
+    const near =
       el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    stickBottomRef.current = near
+    setShowJumpBottom(!near && messages.length > 0)
+  }
+
+  function jumpToBottom() {
+    const el = scrollRef.current
+    if (!el) return
+    stickBottomRef.current = true
+    setShowJumpBottom(false)
+    el.scrollTop = el.scrollHeight
   }
 
   async function handleRetry(id: string) {
@@ -153,10 +165,16 @@ export function MessageArea({
               <>
                 <h2>开始本模版分析</h2>
                 <p>
-                  粘贴合同或通知全文，也可上传已打码的文书照片。切换上方其它模版会打开对应独立对话，不会混在同一面板里。结果仅供参考，非正式法律意见。
+                  粘贴合同或通知全文，也可上传已打码的文书照片。切换上方其它模版会打开对应独立对话，不会混在同一面板里。
                 </p>
               </>
             )}
+            <ol className="empty-steps">
+              <li>确认上方模版与文书类型一致</li>
+              <li>粘贴全文或上传已打码照片</li>
+              <li>发送后看流状态；生成中可点「中断」</li>
+            </ol>
+            <p className="empty-disclaimer">结果仅供参考，非正式法律意见。</p>
           </div>
         )}
         {retryError && (
@@ -181,14 +199,21 @@ export function MessageArea({
             (m.status === 'connecting' || m.status === 'generating') &&
             !!m.content.trim()
           const body = m.content || ''
-          // 生成中一律用 pre，避免行数过阈值切到虚拟列表造成整块重挂载闪动
+          // 对比面板开启且行数多时用虚拟列表；日常完成态用 Markdown 结构化展示
           const useVirt =
+            showPerf &&
             !streaming &&
             !waiting &&
             body.split('\n').length > 12 &&
             (m.status === 'completed' ||
               m.status === 'cancelled' ||
               m.status === 'failed')
+          const useMarkdown =
+            !streaming &&
+            !waiting &&
+            !useVirt &&
+            m.role === 'assistant' &&
+            !!body.trim()
           const canExport =
             m.role === 'assistant' &&
             !!body.trim() &&
@@ -211,9 +236,21 @@ export function MessageArea({
                     {m.role === 'user' ? '你' : '助手'}
                   </span>
                 </span>
-                {m.role === 'assistant' && !waiting && (
-                  <span className={`status-chip status-${m.status}`}>
-                    {STATUS_LABEL[m.status]}
+                {m.role === 'assistant' && (
+                  <span className="bubble-meta">
+                    {!waiting && (
+                      <span className={`status-chip status-${m.status}`}>
+                        {STATUS_LABEL[m.status]}
+                      </span>
+                    )}
+                    {m.rag?.enabled && (
+                      <span
+                        className="rag-chip is-on"
+                        title={m.rag.reason || '已根据相关原文段落生成'}
+                      >
+                        已引用原文 {m.rag.chunks?.length ?? 0} 段
+                      </span>
+                    )}
                   </span>
                 )}
               </header>
@@ -236,6 +273,8 @@ export function MessageArea({
                       : undefined
                   }
                 />
+              ) : useMarkdown ? (
+                <AssistantMarkdown text={body} />
               ) : (
                 <pre className={`plain ${streaming ? 'typing-cursor' : ''}`}>
                   {body}
@@ -299,6 +338,16 @@ export function MessageArea({
         })}
         <div ref={bottomRef} />
       </div>
+      {showJumpBottom && (
+        <button
+          type="button"
+          className="jump-bottom"
+          onClick={jumpToBottom}
+          title="回到最新消息"
+        >
+          ↓ 回到底部
+        </button>
+      )}
       {showPerf && (
         <PerfPanel
           metrics={metrics}

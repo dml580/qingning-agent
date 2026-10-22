@@ -133,11 +133,13 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
 
   const scenarioSlots = useMemo<ScenarioSlot[] | null>(() => {
     if (activeModuleId !== 'docs' || !activeModule) return null
-    return activeModule.scenarios.map((sc) => ({
-      scenarioId: sc.id,
-      name: sc.name,
-      session: latestSessionForScenario(sessions, sc.id),
-    }))
+    return activeModule.scenarios
+      .filter((sc) => !sc.hidden && sc.id !== 'companion')
+      .map((sc) => ({
+        scenarioId: sc.id,
+        name: sc.name,
+        session: latestSessionForScenario(sessions, sc.id),
+      }))
   }, [activeModule, activeModuleId, sessions])
 
   const scenarioTitle = useCallback((scenarioId: string, moduleId?: string) => {
@@ -272,7 +274,9 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       }
       setActiveModuleId(moduleId)
       const mod = catalog?.modules.find((m) => m.id === moduleId)
-      const firstScen = mod?.scenarios[0]?.id || 'general'
+      const firstScen =
+        mod?.scenarios.find((s) => !s.hidden && s.id !== 'companion')?.id ||
+        'general'
       setActiveScenarioId(firstScen)
       setCurrentSessionId(null)
       setMessages([])
@@ -462,7 +466,8 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
           setCurrentSessionId(sid)
           setMessages([])
         }
-        const { user_message, assistant_message } = await api.sendMessage(
+        // 文书默认走迷你 RAG；短文由后端自动跳过，不暴露开关给用户
+        const { user_message, assistant_message, rag } = await api.sendMessage(
           sid,
           text || (payload.imageBase64 ? '请根据上传的文书照片进行分析' : ''),
           mid,
@@ -470,9 +475,14 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
           payload.imageBase64
             ? { base64: payload.imageBase64, mime: payload.imageMime }
             : undefined,
+          mid === 'docs',
         )
         upsertMessage(user_message)
-        upsertMessage({ ...assistant_message, lastSeq: -1 })
+        upsertMessage({
+          ...assistant_message,
+          lastSeq: -1,
+          ...(rag ? { rag } : {}),
+        })
         attachStream(sid, assistant_message.id, 0)
         await refreshSessions()
       } catch (e) {
@@ -521,11 +531,16 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       if (!sid || isStreamingRef.current) return
       setActionError(null)
       try {
-        const { assistant_message } = await api.retry(sid, failedMessageId, {
+        const { assistant_message, rag } = await api.retry(sid, failedMessageId, {
           moduleId: activeModuleIdRef.current,
           scenarioId: activeScenarioIdRef.current,
+          useRag: activeModuleIdRef.current === 'docs',
         })
-        upsertMessage({ ...assistant_message, lastSeq: -1 })
+        upsertMessage({
+          ...assistant_message,
+          lastSeq: -1,
+          ...(rag ? { rag } : {}),
+        })
         attachStream(sid, assistant_message.id, 0)
       } catch (e) {
         const msg =
@@ -557,7 +572,9 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       setCatalog(cat)
       const docs = cat.modules.find((m) => m.id === 'docs')
       const docsId = docs?.id || 'docs'
-      const firstScen = docs?.scenarios[0]?.id || 'general'
+      const firstScen =
+        docs?.scenarios.find((s) => !s.hidden && s.id !== 'companion')?.id ||
+        'general'
       setActiveModuleId(docsId)
       setActiveScenarioId(firstScen)
       await openScenarioPanel(docsId, firstScen)

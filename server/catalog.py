@@ -52,6 +52,12 @@ BASE_DOCS = f"""你是「青柠」生活文书助手，帮助普通人读懂合�
 {OUTPUT_FORMAT}
 """
 
+COMPANION_PROMPT = """你是「青柠」桌宠闲聊助手：语气轻松、简短、好懂，像朋友聊天。
+【重要】不构成医疗、法律或专业建议；涉及健康/用药/重大决策时提醒用户咨询专业人士。
+不要输出「一句话摘要 / 关键信息 / 风险点」那种文书分析长结构。
+回答控制在几段以内，可用短列表；可带一点温暖，但不要卖萌过度。
+""".strip()
+
 SCENARIO_EXTRA: Dict[str, str] = {
     "general": """
 【当前模版：通用合同要点】
@@ -122,6 +128,13 @@ MODULES: List[Dict[str, Any]] = [
                 "blurb": "利率、逾期、提前还款、自动扣款",
                 "placeholder": "粘贴分期/贷款协议，或上传相关文书照片…",
             },
+            {
+                "id": "companion",
+                "name": "青柠闲聊",
+                "blurb": "桌宠侧边小对话（不在文书模版条展示）",
+                "placeholder": "想聊点什么？",
+                "hidden": True,
+            },
         ],
     },
     {
@@ -163,6 +176,7 @@ def list_catalog() -> Dict[str, Any]:
                         "name": s["name"],
                         "blurb": s["blurb"],
                         "placeholder": s.get("placeholder") or "",
+                        "hidden": bool(s.get("hidden")),
                     }
                     for s in m["scenarios"]
                 ],
@@ -197,6 +211,8 @@ def resolve_system_prompt(module_id: str, scenario_id: str) -> str:
         # Future modules: safe fallback until implemented
         module_id, scenario_id = "docs", "general"
         mod = get_module("docs")
+    if scenario_id == "companion":
+        return COMPANION_PROMPT
     scen = get_scenario(mod["id"], scenario_id) or get_scenario("docs", "general")
     assert scen is not None
     extra = SCENARIO_EXTRA.get(scen["id"], SCENARIO_EXTRA["general"])
@@ -214,6 +230,7 @@ SCENARIO_IMAGE_EXPECT: Dict[str, str] = {
     "labor": "劳动合同、聘用协议、Offer/录用通知、离职证明、竞业协议等劳动相关文书",
     "training": "培训/辅导班/线上课协议、报名须知、退费规则、教育分期相关文书",
     "credit": "分期、贷款、信用卡、借款合同、还款计划、费用说明等金融相关文书",
+    "companion": "生活闲聊可用的日常照片（物品、单据、截图、文书等清晰可读的内容）",
 }
 
 

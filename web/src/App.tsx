@@ -6,6 +6,7 @@ import { InputArea } from './components/InputArea'
 import { MessageArea } from './components/MessageArea'
 import { ModelSettingsDrawer } from './components/ModelSettingsDrawer'
 import { ModuleRail } from './components/ModuleRail'
+import { PetChatDrawer } from './components/PetChatDrawer'
 import { QingningPet } from './components/QingningPet'
 import { ReminderBoard } from './components/ReminderBoard'
 import { ScenarioBar } from './components/ScenarioBar'
@@ -20,6 +21,7 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false)
   const [showModelSettings, setShowModelSettings] = useState(false)
   const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [petChatOpen, setPetChatOpen] = useState(false)
 
   useEffect(() => {
     void wb.bootstrap()
@@ -274,7 +276,11 @@ export default function App() {
           </>
         )}
       </main>
-      <QingningPet />
+      <QingningPet onOpenChat={() => setPetChatOpen(true)} />
+      <PetChatDrawer
+        open={petChatOpen}
+        onClose={() => setPetChatOpen(false)}
+      />
       <AboutDrawer open={showAbout} onClose={() => setShowAbout(false)} />
       <ModelSettingsDrawer
         open={showModelSettings}

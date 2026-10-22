@@ -38,6 +38,7 @@ from llm import (
     review_document_image,
     update_runtime_settings,
 )
+from rag import build_rag_user_prompt, retrieve_chunks
 from stream_engine import GenerationJob, cancel_job, get_job, register_job, run_generation
 
 
@@ -70,6 +71,8 @@ class SendMessageBody(BaseModel):
     image_mime: Optional[str] = "image/jpeg"
     module_id: Optional[str] = None
     scenario_id: Optional[str] = None
+    # 开启后对粘贴长文切块检索，再把片段注入提示词（迷你 RAG）
+    use_rag: bool = False
 
 
 class RetryBody(BaseModel):
@@ -78,6 +81,7 @@ class RetryBody(BaseModel):
     prompt: Optional[str] = None
     module_id: Optional[str] = None
     scenario_id: Optional[str] = None
+    use_rag: bool = False
 
 
 class PatchSessionBody(BaseModel):
@@ -346,6 +350,7 @@ async def _start_generation(
     insert_user: bool = True,
     image_base64: Optional[str] = None,
     image_mime: Optional[str] = None,
+    use_rag: bool = False,
 ) -> Dict[str, Any]:
     sess = await db.get_session(session_id)
     if not sess:
@@ -397,6 +402,38 @@ async def _start_generation(
     if not store_prompt:
         raise HTTPException(400, "请输入文字或上传文书照片")
 
+    # 迷你 RAG：库里仍存用户原文；仅生成时注入检索片段
+    llm_prompt = store_prompt
+    system_prompt = resolve_system_prompt(mid, sid)
+    rag_meta: Dict[str, Any] = {
+        "requested": bool(use_rag),
+        "enabled": False,
+        "reason": "未开启检索增强",
+        "chunks": [],
+    }
+    if use_rag and mid == "docs":
+        retrieved = retrieve_chunks(store_prompt, scenario_id=sid)
+        rag_meta = {
+            "requested": True,
+            "enabled": bool(retrieved.get("enabled")),
+            "reason": retrieved.get("reason") or "",
+            "chunks": [
+                {"id": c["id"], "score": c["score"], "preview": c["text"][:80]}
+                for c in (retrieved.get("chunks") or [])
+            ],
+        }
+        if retrieved.get("enabled") and retrieved.get("context_block"):
+            llm_prompt = build_rag_user_prompt(
+                store_prompt, retrieved["context_block"]
+            )
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "【检索增强】用户消息含【检索片段】。请优先依据片段作答，"
+                "并在要点中标注「片段N」；片段未覆盖处写「原文未写清」。"
+            )
+    elif use_rag:
+        rag_meta["reason"] = "仅生活文书支持检索增强"
+
     user_msg = None
     if insert_user:
         user_msg = await db.insert_message(
@@ -411,12 +448,14 @@ async def _start_generation(
 
     prior = await db.list_messages(session_id)
     history = _history_for_llm(prior, exclude_ids={assistant["id"]})
-    system_prompt = resolve_system_prompt(mid, sid)
+    # 避免 history 末尾用户原文与 llm_prompt 重复成两条 user
+    if llm_prompt != store_prompt and history and history[-1].get("role") == "user":
+        history = history[:-1]
 
     job = GenerationJob(
         message_id=assistant["id"],
         session_id=session_id,
-        prompt=store_prompt,
+        prompt=llm_prompt,
         history=history,
         system_prompt=system_prompt,
         image_data_url=image_data_url,
@@ -435,6 +474,7 @@ async def _start_generation(
         "assistant_message": {**assistant, "status": "connecting"},
         "module_id": mid,
         "scenario_id": sid,
+        "rag": rag_meta,
     }
     if user_msg is not None:
         result["user_message"] = user_msg
@@ -456,6 +496,7 @@ async def api_send_message(session_id: str, body: SendMessageBody):
         insert_user=True,
         image_base64=body.image_base64,
         image_mime=body.image_mime,
+        use_rag=bool(body.use_rag),
     )
 
 
@@ -492,6 +533,7 @@ async def api_retry(session_id: str, message_id: str, body: RetryBody = RetryBod
         module_id=body.module_id,
         scenario_id=body.scenario_id,
         insert_user=False,
+        use_rag=bool(body.use_rag),
     )
 
 

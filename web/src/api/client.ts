@@ -1,4 +1,10 @@
-import type { Catalog, Message, Session, SessionDetail } from '../types'
+import type {
+  Catalog,
+  Message,
+  RagMeta,
+  Session,
+  SessionDetail,
+} from '../types'
 
 const BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -216,16 +222,19 @@ export const api = {
     moduleId?: string,
     scenarioId?: string,
     image?: { base64: string; mime?: string },
+    useRag?: boolean,
   ) =>
     request<{
       user_message: Message
       assistant_message: Message
       module_id: string
       scenario_id: string
+      rag?: RagMeta
     }>(`/api/sessions/${sessionId}/messages`, {
       method: 'POST',
       body: JSON.stringify({
         content,
+        use_rag: !!useRag,
         ...(moduleId ? { module_id: moduleId } : {}),
         ...(scenarioId ? { scenario_id: scenarioId } : {}),
         ...(image?.base64
@@ -246,19 +255,25 @@ export const api = {
   retry: (
     sessionId: string,
     messageId: string,
-    opts?: { prompt?: string; moduleId?: string; scenarioId?: string },
+    opts?: {
+      prompt?: string
+      moduleId?: string
+      scenarioId?: string
+      useRag?: boolean
+    },
   ) =>
-    request<{ assistant_message: Message }>(
-      `/api/sessions/${sessionId}/messages/${messageId}/retry`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          ...(opts?.prompt ? { prompt: opts.prompt } : {}),
-          ...(opts?.moduleId ? { module_id: opts.moduleId } : {}),
-          ...(opts?.scenarioId ? { scenario_id: opts.scenarioId } : {}),
-        }),
-      },
-    ),
+    request<{
+      assistant_message: Message
+      rag?: RagMeta
+    }>(`/api/sessions/${sessionId}/messages/${messageId}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({
+        use_rag: !!opts?.useRag,
+        ...(opts?.prompt ? { prompt: opts.prompt } : {}),
+        ...(opts?.moduleId ? { module_id: opts.moduleId } : {}),
+        ...(opts?.scenarioId ? { scenario_id: opts.scenarioId } : {}),
+      }),
+    }),
 
   streamUrl: (sessionId: string, messageId: string, fromSeq = 0) =>
     `${BASE}/api/sessions/${sessionId}/messages/${messageId}/stream?from_seq=${fromSeq}`,
