@@ -4,6 +4,22 @@
 
 配好大模型密钥后走真流式；未配置则自动「演示模式」。可在页面「模型设置」里切换提供商（Key **只存本机后端**，不会进前端仓库）。
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/screenshots/03-docs-chat.jpg" alt="文书分析：模版条、流状态、Markdown 与风险折叠" width="900" />
+</p>
+
+| 文书分析（一模版一会话 · SSE 流状态） | 生活提醒（药箱 / 本机 SQLite） |
+|:---:|:---:|
+| <img src="docs/screenshots/01-docs-analysis.jpg" alt="文书侧栏与结构化分析" width="420" /> | <img src="docs/screenshots/02-reminders.jpg" alt="家庭药箱提醒看板" width="420" /> |
+
+<p align="center">
+  <img src="docs/screenshots/04-model-settings.jpg" alt="模型设置：多提供商，Key 仅存本机" width="360" />
+  <br />
+  <sub>模型设置：多提供商可插拔；API Key 脱敏展示，只写本机后端</sub>
+</p>
+
 ## 技术
 
 - 前端：React、TypeScript、Vite
