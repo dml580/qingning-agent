@@ -6,6 +6,19 @@ import {
 } from 'react'
 import { api } from '../api/client'
 
+const PRIVACY_OPEN_KEY = 'qingning.privacyNoticeOpen'
+
+function readPrivacyOpen(): boolean {
+  try {
+    const v = localStorage.getItem(PRIVACY_OPEN_KEY)
+    if (v === '0') return false
+    if (v === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return true
+}
+
 interface Props {
   disabled: boolean
   streaming: boolean
@@ -85,11 +98,24 @@ export function InputArea({
   const [text, setText] = useState('')
   const [pending, setPending] = useState<PendingImage | null>(null)
   const [reviewing, setReviewing] = useState(false)
+  const [privacyOpen, setPrivacyOpen] = useState(readPrivacyOpen)
   const [banner, setBanner] = useState<{
     kind: BannerKind
     text: string
   } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function togglePrivacy() {
+    setPrivacyOpen((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(PRIVACY_OPEN_KEY, next ? '1' : '0')
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
+  }
 
   function clearPending() {
     setPending((prev) => {
@@ -201,18 +227,37 @@ export function InputArea({
   return (
     <form className="input-area" onSubmit={submit}>
       {allowUpload && (
-        <div className="privacy-notice" role="note">
-          <strong>隐私提醒</strong>
-          <ul>
-            <li>
-              <b>粘贴文本：</b>
-              发送前请自行删除或打码身份证号、手机号、银行卡号、住址、账号等关键隐私；未脱敏造成的泄漏，本产品不负责。
-            </li>
-            <li>
-              <b>上传图片：</b>
-              请先对文书照片中的隐私信息打码再上传；内容会发往第三方模型，泄漏风险自负，本产品不承担责任。
-            </li>
-          </ul>
+        <div
+          className={`privacy-notice${privacyOpen ? ' is-open' : ' is-collapsed'}`}
+          role="note"
+        >
+          <button
+            type="button"
+            className="privacy-notice-toggle"
+            aria-expanded={privacyOpen}
+            aria-controls="privacy-notice-body"
+            onClick={togglePrivacy}
+          >
+            <span className="privacy-notice-title">隐私提醒</span>
+            <span className="privacy-notice-hint">
+              {privacyOpen ? '点击收起' : '点开查看脱敏与打码说明'}
+            </span>
+            <span className="privacy-notice-chevron" aria-hidden>
+              {privacyOpen ? '▴' : '▾'}
+            </span>
+          </button>
+          {privacyOpen && (
+            <ul id="privacy-notice-body">
+              <li>
+                <b>粘贴文本：</b>
+                发送前请自行删除或打码身份证号、手机号、银行卡号、住址、账号等关键隐私；未脱敏造成的泄漏，本产品不负责。
+              </li>
+              <li>
+                <b>上传图片：</b>
+                请先对文书照片中的隐私信息打码再上传；内容会发往第三方模型，泄漏风险自负，本产品不承担责任。
+              </li>
+            </ul>
+          )}
         </div>
       )}
 
@@ -300,7 +345,7 @@ export function InputArea({
                       '粘贴前请先删掉隐私信息；也可上传已打码的文书照片'
               }
               disabled={disabled || reviewing}
-              rows={3}
+              rows={2}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}
             />

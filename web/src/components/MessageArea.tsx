@@ -60,19 +60,46 @@ export function MessageArea({
   noSession = false,
   showPerf = false,
 }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const stickBottomRef = useRef(true)
+  const scrollRafRef = useRef(0)
   const [useVirtual, setUseVirtual] = useState(true)
   const [metrics, setMetrics] = useState<LineMetrics | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [retryError, setRetryError] = useState<string | null>(null)
 
+  const last = messages[messages.length - 1]
+
   const longAssistant = [...messages]
     .reverse()
-    .find((m) => m.role === 'assistant' && m.content.split('\n').length > 20)
+    .find(
+      (m) =>
+        m.role === 'assistant' &&
+        m.status !== 'connecting' &&
+        m.status !== 'generating' &&
+        m.content.split('\n').length > 20,
+    )
 
+  // 流式时不要每 chunk 都 smooth 滚到底，否则会和布局互抢导致闪动
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, messages[messages.length - 1]?.content.length])
+    const el = scrollRef.current
+    if (!el || !stickBottomRef.current) return
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+    scrollRafRef.current = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => {
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+    }
+  }, [messages.length, last?.content.length, last?.status])
+
+  function onScrollList() {
+    const el = scrollRef.current
+    if (!el) return
+    stickBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
 
   async function handleRetry(id: string) {
     setRetryError(null)
@@ -97,7 +124,11 @@ export function MessageArea({
 
   return (
     <div className={`message-area ${showPerf ? 'with-perf' : ''}`}>
-      <div className="message-scroll">
+      <div
+        className="message-scroll"
+        ref={scrollRef}
+        onScroll={onScrollList}
+      >
         {loading && (
           <div className="page-loading" role="status">
             <div className="gen-dots" aria-hidden>
@@ -113,17 +144,16 @@ export function MessageArea({
             <div className="glyph">◎</div>
             {noSession ? (
               <>
-                <h2>还没有会话</h2>
+                <h2>本模版还没有对话</h2>
                 <p>
-                  点左侧「新建会话」，或直接在下方输入框发送——会自动创建会话并开始分析。
+                  每个文书模版各自独立一轮对话。直接在下方发送文字或照片即可开始；左侧可切换模版查看其它板块的记录。
                 </p>
               </>
             ) : (
               <>
-                <h2>开始一轮推流</h2>
+                <h2>开始本模版分析</h2>
                 <p>
-                  选好上方模版后，粘贴合同或通知全文，也可上传已打码的文书照片。
-                  分析会按模版提取要点与风险；结果仅供参考，非正式法律意见。
+                  粘贴合同或通知全文，也可上传已打码的文书照片。切换上方其它模版会打开对应独立对话，不会混在同一面板里。结果仅供参考，非正式法律意见。
                 </p>
               </>
             )}
@@ -151,7 +181,14 @@ export function MessageArea({
             (m.status === 'connecting' || m.status === 'generating') &&
             !!m.content.trim()
           const body = m.content || ''
-          const long = body.split('\n').length > 12
+          // 生成中一律用 pre，避免行数过阈值切到虚拟列表造成整块重挂载闪动
+          const useVirt =
+            !streaming &&
+            !waiting &&
+            body.split('\n').length > 12 &&
+            (m.status === 'completed' ||
+              m.status === 'cancelled' ||
+              m.status === 'failed')
           const canExport =
             m.role === 'assistant' &&
             !!body.trim() &&
@@ -189,7 +226,7 @@ export function MessageArea({
                     m.status === 'connecting' ? 'connecting' : 'generating'
                   }
                 />
-              ) : long ? (
+              ) : useVirt ? (
                 <VirtualLines
                   text={body}
                   virtual={useVirtual}

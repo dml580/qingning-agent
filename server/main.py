@@ -351,11 +351,20 @@ async def _start_generation(
     if not sess:
         raise HTTPException(404, "session not found")
 
-    mid = module_id or sess.get("module_id") or default_ids()["module_id"]
-    sid = scenario_id or sess.get("scenario_id") or default_ids()["scenario_id"]
+    # 会话绑定模版后不可被单次请求改写，否则多模版问答会堆进同一条历史
+    mid = sess.get("module_id") or default_ids()["module_id"]
+    sid = sess.get("scenario_id") or default_ids()["scenario_id"]
+    if module_id and module_id != mid:
+        raise HTTPException(
+            409,
+            f"会话属于模块 {mid}，与请求的 {module_id} 不一致，请切换或新建会话",
+        )
+    if scenario_id and scenario_id != sid:
+        raise HTTPException(
+            409,
+            f"会话属于模版 {sid}，与请求的 {scenario_id} 不一致，请切换模版打开对应对话",
+        )
     _validate_ids(mid, sid)
-    if mid != sess.get("module_id") or sid != sess.get("scenario_id"):
-        await db.update_session_scenario(session_id, mid, sid)
 
     image_data_url = _image_data_url(image_base64, image_mime)
     if image_data_url:

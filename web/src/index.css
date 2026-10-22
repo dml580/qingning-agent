@@ -1,10 +1,17 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap');
 
-:root {
+/*
+ * 三套主题：ink（黑青默认）/ dark（纯黑）/ light（白）
+ * 青柠强调绿 (--accent*) 三套保持一致
+ */
+:root,
+[data-theme='ink'] {
   --bg: #07090c;
+  --bg-top: #0a0d12;
   --bg-elevated: #0d1117;
   --panel: #0f141b;
   --panel-2: #151b24;
+  --rail-bg: #090c10;
   --border: #243041;
   --border-soft: #1a2330;
   --text: #edf2f7;
@@ -20,12 +27,82 @@
   --ok: #5ddea2;
   --warn: #f0c35a;
   --user: #1a2740;
+  --user-top: #1e2f4a;
   --assistant: #121820;
+  --input-bg: #0a0e14;
+  --input-bg-focus: #0c1118;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --glow-a: #1a2a14;
+  --glow-b: #121c2e;
+  --scroll-thumb: #2a3545;
+  --scroll-thumb-hover: #3a4a5e;
   --radius: 16px;
   --font: 'Noto Sans SC', system-ui, sans-serif;
   --display: 'Syne', 'Noto Sans SC', sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+
+[data-theme='dark'] {
+  --bg: #050505;
+  --bg-top: #0a0a0a;
+  --bg-elevated: #111111;
+  --panel: #141414;
+  --panel-2: #1a1a1a;
+  --rail-bg: #0a0a0a;
+  --border: #2e2e2e;
+  --border-soft: #222;
+  --text: #f2f2f2;
+  --muted: #9a9a9a;
+  --faint: #6a6a6a;
+  --hover: #1c1c1c;
+  --active: #242424;
+  --user: #1c1c1c;
+  --user-top: #2a2a2a;
+  --assistant: #161616;
+  --input-bg: #0d0d0d;
+  --input-bg-focus: #121212;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --glow-a: #12180c;
+  --glow-b: #101010;
+  --scroll-thumb: #333;
+  --scroll-thumb-hover: #484848;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg: #f4f6f8;
+  --bg-top: #eef2f5;
+  --bg-elevated: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f0f3f6;
+  --rail-bg: #e8ecf0;
+  --border: #c9d2dc;
+  --border-soft: #dde3ea;
+  --text: #15202b;
+  --muted: #5a6a7a;
+  --faint: #8492a1;
+  --hover: #e4e9ef;
+  --active: #d8e0e8;
+  --user: #dce7f5;
+  --user-top: #c9daf0;
+  --assistant: #ffffff;
+  --input-bg: #ffffff;
+  --input-bg-focus: #f8fafc;
+  --shadow: 0 18px 48px rgba(20, 40, 60, 0.12);
+  --glow-a: #e8f5c8;
+  --glow-b: #d8e6f5;
+  --scroll-thumb: #b8c4d0;
+  --scroll-thumb-hover: #96a6b6;
+  /* 强调绿不变 */
+  --accent: #c8f542;
+  --accent-soft: #9bc41f;
+  --accent-ink: #142000;
+  --accent-glow: rgba(160, 200, 40, 0.22);
+  color-scheme: light;
+}
+
+:root {
   font-family: var(--font);
   line-height: 1.5;
   color: var(--text);
@@ -58,7 +135,7 @@ code {
 
 ::selection {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: #fff;
+  color: var(--text);
 }
 
 ::-webkit-scrollbar {
@@ -67,10 +144,10 @@ code {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a3545;
+  background: var(--scroll-thumb);
   border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a4a5e;
+  background: var(--scroll-thumb-hover);
 }

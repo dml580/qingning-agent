@@ -10,6 +10,7 @@ import { QingningPet } from './components/QingningPet'
 import { ReminderBoard } from './components/ReminderBoard'
 import { ScenarioBar } from './components/ScenarioBar'
 import { SessionList } from './components/SessionList'
+import { ThemeSwitcher } from './components/ThemeSwitcher'
 import { useWorkbench } from './context/WorkbenchContext'
 import './App.css'
 
@@ -79,9 +80,15 @@ export default function App() {
       <SessionList
         sessions={wb.sessions}
         currentId={wb.currentSessionId}
+        scenarioSlots={isDocsChat ? wb.scenarioSlots : null}
+        activeScenarioId={wb.activeScenarioId}
         scenarioLabel={(s) => scenarioNameById(s.scenario_id)}
         onSelect={(id) => {
           void wb.selectSession(id)
+          closeSessionsSoon()
+        }}
+        onOpenScenario={(scenarioId) => {
+          void wb.setScenario(scenarioId)
           closeSessionsSoon()
         }}
         onCreate={() => {
@@ -90,6 +97,7 @@ export default function App() {
         }}
         onRemove={(id) => void wb.removeSession(id)}
         createDisabled={!wb.moduleAvailable || isReminders}
+        createLabel={isDocsChat ? '重新开始本模版' : '新建会话'}
         modeHint={
           isReminders
             ? '生活提醒使用右侧看板，不占用会话列表。数据保存在本机。'
@@ -153,6 +161,7 @@ export default function App() {
                 </div>
               </div>
               <div className="head-actions">
+                <ThemeSwitcher />
                 <button
                   type="button"
                   className="btn ghost"
