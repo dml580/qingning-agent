@@ -14,6 +14,7 @@ import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
@@ -34,7 +35,7 @@ DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ARK_MODEL = "doubao-seed-2-0-lite-260428"
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是「青柠」生活文书助手。回答准确、简洁、有条理。"
+    "你是「青柠」生活助理 Agent。回答准确、简洁、有条理。"
     "用中文回复，除非用户要求其他语言。"
 )
 
@@ -311,6 +312,29 @@ def build_chat_messages(
     return messages
 
 
+class _ApiError(RuntimeError):
+    """HTTP 层错误，保留状态码与原始响应体，便于按需降级重试。"""
+
+    def __init__(self, status: int, message: str, body: str = ""):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _apply_usage(metrics: Optional[Dict[str, Any]], usage: Any) -> None:
+    """把 OpenAI 兼容响应里的 usage 回填到 metrics，缺失字段保持 None。"""
+    if metrics is None or not isinstance(usage, dict):
+        return
+    for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(field)
+        if isinstance(value, int):
+            metrics[field] = value
+
+
 def _data_url(image_base64: str, mime: str = "image/jpeg") -> str:
     raw = image_base64.strip()
     if raw.startswith("data:"):
@@ -324,15 +348,19 @@ async def stream_chat(
     should_cancel=None,
     system_prompt: Optional[str] = None,
     image_data_url: Optional[str] = None,
+    metrics: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[str]:
-    """Yield text deltas from OpenAI-compatible chat/completions SSE."""
+    """Yield text deltas from OpenAI-compatible chat/completions SSE.
+
+    传入可变 dict 作为 metrics 时，会回填 usage / ttft_ms / total_ms，用于 Token 监控。
+    """
     cfg = get_config()
     if not cfg["api_key"]:
         raise RuntimeError("未配置 API Key，请在「模型设置」或 server/.env 中填写")
 
     model = cfg["vision_model"] if image_data_url else cfg["model"]
     url = f"{cfg['base_url']}/chat/completions"
-    payload = {
+    base_payload: Dict[str, Any] = {
         "model": model,
         "messages": build_chat_messages(
             prompt,
@@ -348,44 +376,171 @@ async def stream_chat(
     }
 
     label = PROVIDERS.get(str(cfg.get("provider")), {}).get("label") or "模型"
+    started = time.perf_counter()
+    if metrics is not None:
+        metrics.setdefault("provider", str(cfg.get("provider") or ""))
+        metrics.setdefault("model", model)
+        metrics["kind"] = "vision" if image_data_url else "chat"
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as client:
-        async with client.stream("POST", url, headers=headers, json=payload) as resp:
-            if resp.status_code >= 400:
-                body = (await resp.aread()).decode("utf-8", errors="replace")
-                # 勿把完整响应（可能含敏感信息）打太长
-                raise RuntimeError(f"{label} API {resp.status_code}: {body[:400]}")
+    async def run(payload: Dict[str, Any]) -> AsyncIterator[str]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=300.0)) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    # 勿把完整响应（可能含敏感信息）打太长
+                    raise _ApiError(
+                        resp.status_code,
+                        f"{label} API {resp.status_code}: {body[:400]}",
+                        body,
+                    )
 
-            buffer = ""
-            async for raw in resp.aiter_text():
-                if should_cancel and should_cancel():
-                    return
-                buffer += raw
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line or line.startswith(":"):
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
+                buffer = ""
+                async for raw in resp.aiter_text():
+                    if should_cancel and should_cancel():
                         return
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = obj.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    text = delta.get("content")
-                    if text:
-                        yield text
+                    buffer += raw
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line or line.startswith(":"):
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if metrics is not None:
+                            _apply_usage(metrics, obj.get("usage"))
+                        choices = obj.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        text = delta.get("content")
+                        if text:
+                            if metrics is not None and metrics.get("ttft_ms") is None:
+                                metrics["ttft_ms"] = _elapsed_ms(started)
+                            yield text
+
+    try:
+        with_usage = dict(base_payload, stream_options={"include_usage": True})
+        try:
+            async for text in run(with_usage):
+                yield text
+        except _ApiError as exc:
+            # 少数兼容实现不认 stream_options，去掉后重试一次
+            if exc.status != 400 or "stream_options" not in exc.body.lower():
+                raise
+            if metrics is not None:
+                metrics["usage_supported"] = False
+            async for text in run(base_payload):
+                yield text
+    finally:
+        if metrics is not None:
+            metrics["total_ms"] = _elapsed_ms(started)
+
 
 
 # 兼容旧导入名
 stream_doubao = stream_chat
+
+
+def _tool_calls_from_message(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = message.get("tool_calls") or []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") or {}
+        name = (fn.get("name") or item.get("name") or "").strip()
+        if not name:
+            continue
+        out.append(
+            {
+                "id": str(item.get("id") or f"call_{len(out)}"),
+                "name": name,
+                "arguments": fn.get("arguments") if "arguments" in fn else item.get("arguments"),
+            }
+        )
+    legacy = message.get("function_call")
+    if not out and isinstance(legacy, dict):
+        name = (legacy.get("name") or "").strip()
+        if name:
+            out.append(
+                {
+                    "id": "call_legacy",
+                    "name": name,
+                    "arguments": legacy.get("arguments"),
+                }
+            )
+    return out
+
+
+async def complete_with_tools(
+    prompt: str,
+    *,
+    history: Optional[List[Dict[str, str]]] = None,
+    system_prompt: Optional[str] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    should_cancel=None,
+) -> Dict[str, Any]:
+    """
+    一轮非流式补全，让模型选择 tools。
+    返回 {content, tool_calls:[{id,name,arguments}], unsupported}。
+    接口不支持 tools 时 unsupported=True，调用方改走本地启发式。
+    """
+    cfg = get_config()
+    if not cfg["api_key"]:
+        return {"content": "", "tool_calls": [], "unsupported": True}
+
+    url = f"{cfg['base_url']}/chat/completions"
+    payload: Dict[str, Any] = {
+        "model": cfg["model"],
+        "messages": build_chat_messages(
+            prompt, history, system_prompt=system_prompt
+        ),
+        "stream": False,
+        "tool_choice": "auto",
+        "tools": tools or [],
+    }
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+    }
+    label = PROVIDERS.get(str(cfg.get("provider")), {}).get("label") or "模型"
+    started = time.perf_counter()
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, read=60.0)) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if should_cancel and should_cancel():
+            return {"content": "", "tool_calls": [], "unsupported": False}
+        if resp.status_code >= 400:
+            body = resp.text[:400]
+            lowered = body.lower()
+            if resp.status_code in (400, 404, 422) or "tool" in lowered:
+                return {
+                    "content": "",
+                    "tool_calls": [],
+                    "unsupported": True,
+                    "error": f"{label} API {resp.status_code}: {body}",
+                }
+            raise RuntimeError(f"{label} API {resp.status_code}: {body}")
+        data = resp.json()
+    choices = data.get("choices") or []
+    message = (choices[0].get("message") if choices else {}) or {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return {
+        "content": message.get("content") or "",
+        "tool_calls": _tool_calls_from_message(message),
+        "unsupported": False,
+        "usage": usage,
+        "elapsed_ms": _elapsed_ms(started),
+        "provider": str(cfg.get("provider") or ""),
+        "model": str(cfg.get("model") or ""),
+    }
 
 
 def _parse_review_json(text: str) -> Dict[str, Any]:
@@ -404,6 +559,25 @@ def _parse_review_json(text: str) -> Dict[str, Any]:
         "related": False,
         "reason": "审核结果无法解析，请换一张更清晰的文书照片再试",
     }
+
+
+def _parse_json_object(text: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    text = (text or "").strip()
+    if not text:
+        return fallback
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else fallback
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        return fallback
+    try:
+        data = json.loads(m.group(0))
+        return data if isinstance(data, dict) else fallback
+    except json.JSONDecodeError:
+        return fallback
 
 
 async def review_document_image(
@@ -426,7 +600,7 @@ async def review_document_image(
     data_url = _data_url(image_base64, mime)
     if scenario_id == "companion":
         system = (
-            "你是青柠 App 闲聊场景的图片审核员。"
+            "你是「生活助理 Agent」闲聊场景的图片审核员。"
             "必须只输出一个 JSON 对象，不要 Markdown，不要其它文字。"
             '格式：{"related":true或false,"reason":"给用户看的一句中文说明","what_you_see":"画面里大致是什么"}'
         )
@@ -441,7 +615,7 @@ async def review_document_image(
 请审核这张图片。"""
     else:
         system = (
-            "你是青柠 App 的图片审核员。只判断用户上传的图片是否为「生活文书相关」照片。"
+            "你是「生活助理 Agent」的图片审核员。只判断用户上传的图片是否为「生活助理相关」照片。"
             "必须只输出一个 JSON 对象，不要 Markdown，不要其它文字。"
             '格式：{"related":true或false,"reason":"给用户看的一句中文说明","what_you_see":"画面里大致是什么"}'
         )
@@ -523,4 +697,138 @@ async def review_document_image(
         "related": related,
         "reason": reason,
         "what_you_see": parsed.get("what_you_see"),
+    }
+
+
+async def extract_document_image_ocr(
+    image_base64: str,
+    *,
+    mime: str = "image/jpeg",
+) -> Dict[str, Any]:
+    """
+    对生活文书图片做轻量结构化 OCR。
+    重点支持：
+    - 药盒说明书 / 用药提醒相关
+    - 水电燃气 / 物业等费用账单
+    - 其它通用文书
+    """
+    cfg = get_config()
+    if not cfg["api_key"]:
+        return {
+            "ok": False,
+            "doc_type": "unknown",
+            "reason": "未配置 API Key，暂时无法识别图片内容。",
+        }
+
+    data_url = _data_url(image_base64, mime)
+    system = (
+        "你是「青柠」生活助理 Agent 的 OCR 与文书归档助手。"
+        "你必须只输出一个 JSON 对象，不要 Markdown，不要解释，不要代码块。"
+    )
+    user_text = """请识别这张生活文书图片，并按下面 JSON 输出：
+{
+  "doc_type":"medicine_guide|utility_bill|generic_document|unknown",
+  "title":"简短标题",
+  "summary":"一句话摘要",
+  "confidence":"high|medium|low",
+  "key_points":["最多6条中文要点"],
+  "medicine":{
+    "name":"药品或用品名",
+    "spec":"规格",
+    "expiry_date":"YYYY-MM-DD 或原文",
+    "usage":"用法或注意事项",
+    "manufacturer":"厂家"
+  },
+  "bill":{
+    "bill_type":"水费|电费|燃气费|物业费|话费|其它",
+    "account":"户号/客户号",
+    "amount":"金额原文",
+    "due_date":"YYYY-MM-DD 或原文",
+    "billing_period":"账期",
+    "provider":"机构/公司"
+  },
+  "raw_excerpt":"摘出最关键的原文片段，控制在200字内"
+}
+
+规则：
+1. 药盒、药品说明书、药店标签、疫苗单据、体检/复诊单等偏健康提醒材料，doc_type=medicine_guide。
+2. 水电燃气、物业、宽带、话费、缴费通知、账单截图等，doc_type=utility_bill。
+3. 其它合同、通知、清单、公函、票据等，doc_type=generic_document。
+4. 完全看不清或无关图片，doc_type=unknown。
+5. 看不清的字段留空，不要编造。
+6. 日期尽量标准化为 YYYY-MM-DD；做不到就保留原文。
+7. key_points 用白话，方便后续直接给用户看。
+"""
+    payload = {
+        "model": cfg["vision_model"],
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        "stream": False,
+        "temperature": 0.1,
+    }
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+    }
+    fallback = {
+        "doc_type": "unknown",
+        "title": "",
+        "summary": "",
+        "confidence": "low",
+        "key_points": [],
+        "medicine": {},
+        "bill": {},
+        "raw_excerpt": "",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(50.0)) as client:
+            resp = await client.post(
+                f"{cfg['base_url']}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                return {
+                    "ok": False,
+                    "doc_type": "unknown",
+                    "reason": f"OCR 服务暂时不可用（{resp.status_code}）",
+                    "detail": resp.text[:400],
+                }
+            obj = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "doc_type": "unknown",
+            "reason": f"OCR 识别失败：{exc}",
+        }
+
+    choices = obj.get("choices") or []
+    content = ""
+    if choices:
+        content = (choices[0].get("message") or {}).get("content") or ""
+    parsed = _parse_json_object(content, fallback)
+    doc_type = str(parsed.get("doc_type") or "unknown").strip() or "unknown"
+    if doc_type not in {"medicine_guide", "utility_bill", "generic_document", "unknown"}:
+        doc_type = "unknown"
+    key_points = parsed.get("key_points") or []
+    if not isinstance(key_points, list):
+        key_points = []
+    return {
+        "ok": doc_type != "unknown",
+        "doc_type": doc_type,
+        "title": str(parsed.get("title") or "").strip(),
+        "summary": str(parsed.get("summary") or "").strip(),
+        "confidence": str(parsed.get("confidence") or "low").strip() or "low",
+        "key_points": [str(x).strip() for x in key_points if str(x).strip()][:6],
+        "medicine": parsed.get("medicine") if isinstance(parsed.get("medicine"), dict) else {},
+        "bill": parsed.get("bill") if isinstance(parsed.get("bill"), dict) else {},
+        "raw_excerpt": str(parsed.get("raw_excerpt") or "").strip()[:200],
     }

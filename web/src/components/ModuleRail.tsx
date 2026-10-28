@@ -5,35 +5,53 @@ interface Props {
   modules: AppModule[]
   activeModuleId: string
   onSelect: (moduleId: string) => void
+  reminderOpen: boolean
+  reminderCount: number
+  onToggleReminder: () => void
 }
 
-export function ModuleRail({ modules, activeModuleId, onSelect }: Props) {
+export function ModuleRail({
+  modules,
+  activeModuleId,
+  onSelect,
+  reminderOpen,
+  reminderCount,
+  onToggleReminder,
+}: Props) {
+  const workspace = modules[0]
+
   return (
-    <nav className="module-rail" aria-label="功能模块">
+    <nav className="module-rail" aria-label="生活助理工作台">
       <div className="rail-brand" title="青柠">
         <BrandMark className="sm" />
       </div>
-      <div className="rail-mods">
-        {modules.map((m) => {
-          const active = m.id === activeModuleId
-          const soon = m.status === 'coming_soon'
-          return (
-            <button
-              key={m.id}
-              type="button"
-              className={`rail-item ${active ? 'active' : ''} ${soon ? 'soon' : ''}`}
-              onClick={() => onSelect(m.id)}
-              title={soon ? `${m.name}（即将开放）` : m.blurb}
-            >
-              <span className="rail-icon" aria-hidden>
-                {m.id === 'docs' ? '文' : '提'}
-              </span>
-              <span className="rail-label">{m.name}</span>
-              {soon && <span className="rail-tag">Soon</span>}
-            </button>
-          )
-        })}
-      </div>
+      {workspace ? (
+        <div className="rail-mods">
+          <button
+            type="button"
+            className={`rail-item workspace ${workspace.id === activeModuleId && !reminderOpen ? 'active' : ''}`}
+            onClick={() => onSelect(workspace.id)}
+            title={workspace.blurb}
+          >
+            <span className="rail-icon" aria-hidden>
+              青
+            </span>
+            <span className="rail-label">工作台</span>
+          </button>
+          <button
+            type="button"
+            className={`rail-item reminder${reminderOpen ? ' active' : ''}`}
+            onClick={onToggleReminder}
+            title="切换到提醒面板"
+          >
+            <span className="rail-icon" aria-hidden>
+              记
+            </span>
+            <span className="rail-label">提醒</span>
+            <span className="rail-badge">{reminderCount}</span>
+          </button>
+        </div>
+      ) : null}
     </nav>
   )
 }

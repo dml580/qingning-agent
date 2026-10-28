@@ -1,7 +1,7 @@
 import {
+  useEffect,
   useRef,
   useState,
-  type FormEvent,
   type KeyboardEvent,
 } from 'react'
 import { api } from '../api/client'
@@ -16,13 +16,16 @@ function readPrivacyOpen(): boolean {
   } catch {
     /* ignore */
   }
-  return true
+  return false
 }
 
 interface Props {
   disabled: boolean
   streaming: boolean
   placeholder?: string
+  seedText?: string
+  seedNonce?: number
+  showPrivacyNotice?: boolean
   scenarioId: string
   moduleId: string
   allowUpload?: boolean
@@ -46,6 +49,29 @@ type PendingImage = {
 
 const MAX_EDGE = 1280
 const JPEG_QUALITY = 0.85
+const LEGACY_QUICK_TEXTS = new Set([
+  '帮我看看这份合同或通知里最需要注意的点，我接下来把内容发给你。',
+  '帮我记一下一个提醒：',
+  '帮我查一下这件事的最新信息：',
+  '帮我看看这张账单或费用单，整理出金额、时间和我接下来要做什么。',
+  '我想问你一个生活上的问题：',
+  '把合同、协议或通知发给我，我陪你慢慢看看重点。',
+  '你想记什么提醒，慢慢告诉我就好。',
+  '你想查什么信息，我来陪你一起找。',
+  '把账单或费用单发给我，我帮你一起理清楚。',
+  '想聊什么都可以，我在这儿听着。',
+])
+
+function isLegacyQuickDraft(text: string): boolean {
+  const current = text.trim()
+  if (!current) return false
+  if (LEGACY_QUICK_TEXTS.has(current)) return true
+  const lines = current
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return !!lines.length && lines.every((line) => LEGACY_QUICK_TEXTS.has(line))
+}
 
 async function fileToCompressedDataUrl(file: File): Promise<{
   dataUrl: string
@@ -88,6 +114,9 @@ export function InputArea({
   disabled,
   streaming,
   placeholder,
+  seedText,
+  seedNonce,
+  showPrivacyNotice = false,
   scenarioId,
   moduleId,
   allowUpload = true,
@@ -99,11 +128,25 @@ export function InputArea({
   const [pending, setPending] = useState<PendingImage | null>(null)
   const [reviewing, setReviewing] = useState(false)
   const [privacyOpen, setPrivacyOpen] = useState(readPrivacyOpen)
+  const [quickHint, setQuickHint] = useState('')
+  const [hintActive, setHintActive] = useState(false)
+  const [focused, setFocused] = useState(false)
   const [banner, setBanner] = useState<{
     kind: BannerKind
     text: string
   } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const textRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    if (!seedText) return
+    setQuickHint(seedText)
+    setHintActive(true)
+    setText((prev) => (isLegacyQuickDraft(prev) ? '' : prev))
+    requestAnimationFrame(() => {
+      textRef.current?.focus()
+    })
+  }, [seedNonce, seedText])
 
   function togglePrivacy() {
     setPrivacyOpen((prev) => {
@@ -124,7 +167,7 @@ export function InputArea({
     })
   }
 
-  async function submit(e?: FormEvent) {
+  async function submit(e?: { preventDefault(): void }) {
     e?.preventDefault()
     const v = text.trim()
     if (disabled || streaming || reviewing) return
@@ -137,6 +180,7 @@ export function InputArea({
     try {
       await onSend(payload)
       setText('')
+      setHintActive(false)
       clearPending()
       setBanner(null)
     } catch (err) {
@@ -226,7 +270,7 @@ export function InputArea({
 
   return (
     <form className="input-area" onSubmit={submit}>
-      {allowUpload && (
+      {allowUpload && showPrivacyNotice && (
         <div
           className={`privacy-notice${privacyOpen ? ' is-open' : ' is-collapsed'}`}
           role="note"
@@ -328,16 +372,20 @@ export function InputArea({
                   className="composer-upload-btn"
                   disabled={disabled || reviewing || streaming}
                   onClick={startUpload}
-                  title="上传前请先打码隐私信息"
+                  title={reviewing ? '正在审核图片' : '上传已打码的文书或账单图片'}
+                  aria-label={reviewing ? '正在审核图片' : '上传图片'}
                 >
-                  {reviewing ? '审核中…' : '上传图片'}
+                  <span aria-hidden>{reviewing ? '···' : '+'}</span>
                 </button>
               </div>
             )}
             <textarea
+              ref={textRef}
               value={text}
               placeholder={
-                streaming
+                quickHint && hintActive
+                  ? ''
+                  : streaming
                   ? '生成中…可点右侧「中断」'
                   : reviewing
                     ? '正在审核图片是否为相关文书…'
@@ -347,8 +395,22 @@ export function InputArea({
               disabled={disabled || reviewing || streaming}
               rows={2}
               onChange={(e) => setText(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
               onKeyDown={onKeyDown}
             />
+            {!!quickHint && hintActive && !text.trim() && !focused && (
+              <button
+                type="button"
+                className="composer-soft-hint"
+                onClick={() => {
+                  setFocused(true)
+                  textRef.current?.focus()
+                }}
+              >
+                {quickHint}
+              </button>
+            )}
           </div>
           <div className="input-actions">
             {streaming ? (

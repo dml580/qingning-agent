@@ -8,11 +8,13 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { MessageStatus } from '../types'
+import type { AgentMeta, MessageStatus, ToolEvent } from '../types'
 
 export interface StreamHandlers {
   onStatus?: (status: MessageStatus) => void
   onChunk?: (seq: number, text: string) => void
+  onAgent?: (agent: AgentMeta) => void
+  onTool?: (events: ToolEvent[]) => void
   onDone?: (status: MessageStatus, content: string) => void
   onError?: (error: string, content?: string) => void
 }
@@ -85,6 +87,20 @@ export function useSseStream() {
           return prev
         })
         applyChunk(data.seq, data.text)
+      })
+
+      es.addEventListener('agent', (ev) => {
+        const data = JSON.parse((ev as MessageEvent).data) as {
+          agent: AgentMeta
+        }
+        if (data.agent) handlersRef.current.onAgent?.(data.agent)
+      })
+
+      es.addEventListener('tool', (ev) => {
+        const data = JSON.parse((ev as MessageEvent).data) as {
+          events?: ToolEvent[]
+        }
+        if (data.events) handlersRef.current.onTool?.(data.events)
       })
 
       es.addEventListener('done', (ev) => {

@@ -49,6 +49,33 @@ export interface RagMeta {
   chunks?: { id: number; score: number; preview: string }[]
 }
 
+export interface AgentCall {
+  name: string
+  label: string
+  ok: boolean
+  summary: string
+  step_index?: number
+  status?: 'completed' | 'failed' | 'waiting_confirmation' | 'rejected'
+  code?: string
+}
+
+export interface AgentMeta {
+  enabled: boolean
+  wrote_reminders: boolean
+  calls: AgentCall[]
+  run_id?: string
+}
+
+/** 流式 tool 事件：工具执行过程中的增量状态（SSE tool 事件，不落库）。 */
+export interface ToolEvent {
+  seq: number
+  phase: 'planning' | 'running' | 'done' | 'idle'
+  name?: string
+  label?: string
+  ok?: boolean
+  summary?: string
+}
+
 export interface Message {
   id: string
   session_id: string
@@ -63,6 +90,10 @@ export interface Message {
   lastSeq?: number
   /** Client-only: 本轮是否走了迷你 RAG（接口返回，不落库）。 */
   rag?: RagMeta
+  /** Client-only: 本轮模型调用了哪些本机工具（SSE agent 事件，不落库）。 */
+  agent?: AgentMeta
+  /** Client-only: 工具执行过程的增量事件（SSE tool 事件，不落库）。 */
+  toolEvents?: ToolEvent[]
 }
 
 export interface SessionDetail extends Session {

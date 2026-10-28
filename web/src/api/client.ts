@@ -9,6 +9,7 @@ import type {
 const BASE = import.meta.env.VITE_API_BASE || ''
 
 function formatApiError(text: string, status: number): string {
+  if (status >= 500) return '服务器暂时出错，请稍后重试'
   try {
     const parsed = JSON.parse(text) as {
       detail?:
@@ -32,6 +33,7 @@ function formatApiError(text: string, status: number): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
@@ -39,9 +41,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text()
+    if (res.status === 401 && !path.startsWith('/api/auth/')) {
+      onUnauthorized?.()
+    }
     throw new Error(formatApiError(text, res.status))
   }
   return res.json() as Promise<T>
+}
+
+/** 会话失效（401）时由 App 注册回到登录页。 */
+let onUnauthorized: (() => void) | null = null
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn
+}
+
+export interface AuthStatus {
+  configured: boolean
+  authenticated: boolean
+  user_id?: string | null
 }
 
 export interface HealthInfo {
@@ -84,14 +102,99 @@ export interface ReminderItem {
   title: string
   note: string
   due_date: string
+  due_time: string
   done: boolean
   notify_browser: boolean
+  calendar_provider?: string
+  calendar_event_id?: string
+  calendar_event_url?: string
   created_at: number
   updated_at: number
 }
 
+export interface CalendarStatus {
+  configured: boolean
+  provider: string
+  calendar_id: string
+  alert_minutes: number
+  guide: string
+}
+
+export interface SyncCalendarResult {
+  ok: boolean
+  already_synced?: boolean
+  code?: 'not_configured' | 'perm_denied' | 'sync_failed' | string
+  reason?: string
+  guide?: string
+  provider?: string
+  event_url?: string
+  alert_minutes?: number
+  item?: ReminderItem
+}
+
+export interface AccountBackup {
+  format: 'qingning-account-backup'
+  schema_version: number
+  user_id: string
+  created_at: number
+  data: Record<string, Array<Record<string, unknown>>>
+}
+
+export interface BackupStatus {
+  last_export_at: number | null
+  last_restore_at: number | null
+}
+
 export const api = {
   health: () => request<HealthInfo>('/api/health'),
+
+  authStatus: () => request<AuthStatus>('/api/auth/status'),
+
+  authSetup: (username: string, password: string) =>
+    request<{ ok: boolean; user_id: string }>('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
+  authLogin: (username: string, password: string) =>
+    request<{ ok: boolean; user_id: string }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
+  authLogout: () =>
+    request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  exportAccountBackup: () => request<AccountBackup>('/api/data/backup'),
+
+  backupStatus: () => request<BackupStatus>('/api/data/backup/status'),
+  listTodos: (includeDone = true) => request<Array<{ id: string; title: string; note: string; due_date: string; due_time: string; done: boolean }>>(`/api/todos?include_done=${includeDone}`),
+  createTodo: (body: { title: string; note?: string; due_date?: string; due_time?: string }) => request('/api/todos', { method: 'POST', body: JSON.stringify(body) }),
+  patchTodo: (id: string, done: boolean) => request(`/api/todos/${id}?done=${done}`, { method: 'PATCH' }),
+  deleteTodo: (id: string) => request(`/api/todos/${id}`, { method: 'DELETE' }),
+  listMemory: () => request<Record<string, string>>('/api/memory'),
+  putMemory: (key: string, value: string) => request(`/api/memory/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ key, value }) }),
+  deleteMemory: (key: string) => request(`/api/memory/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  listDocumentCaptures: () => request<Array<{ id: string; kind: string; title: string; summary: string; created_at: number }>>('/api/document-captures?limit=30'),
+
+  restoreAccountBackup: (backup: AccountBackup, confirmUsername: string) =>
+    request<{ ok: boolean; counts: Record<string, number>; restored_at: number }>(
+      '/api/data/restore',
+      {
+        method: 'POST',
+        body: JSON.stringify({ backup, confirm_username: confirmUsername }),
+      },
+    ),
+
+  agentStepAction: (
+    runId: string,
+    stepIndex: number,
+    action: 'approve' | 'reject' | 'retry',
+  ) =>
+    request<{ ok: boolean; step: { status: string; result: Record<string, unknown> } }>(
+      `/api/agent/runs/${runId}/steps/${stepIndex}/${action}`,
+      { method: 'POST' },
+    ),
 
   getLlmSettings: () => request<LlmSettingsResponse>('/api/llm/settings'),
 
@@ -136,6 +239,7 @@ export const api = {
     category: string
     title: string
     due_date: string
+    due_time?: string
     note?: string
     notify_browser?: boolean
   }) =>
@@ -149,6 +253,7 @@ export const api = {
     body: Partial<{
       title: string
       due_date: string
+      due_time: string
       note: string
       done: boolean
       notify_browser: boolean
@@ -162,6 +267,13 @@ export const api = {
 
   deleteReminder: (id: string) =>
     request<{ ok: boolean }>(`/api/reminders/${id}`, { method: 'DELETE' }),
+
+  calendarStatus: () => request<CalendarStatus>('/api/calendar/status'),
+
+  syncReminderCalendar: (id: string) =>
+    request<SyncCalendarResult>(`/api/reminders/${id}/sync-calendar`, {
+      method: 'POST',
+    }),
 
   listSessions: (moduleId?: string) =>
     request<Session[]>(
@@ -223,6 +335,7 @@ export const api = {
     scenarioId?: string,
     image?: { base64: string; mime?: string },
     useRag?: boolean,
+    useAgent?: boolean,
   ) =>
     request<{
       user_message: Message
@@ -235,6 +348,7 @@ export const api = {
       body: JSON.stringify({
         content,
         use_rag: !!useRag,
+        use_agent: !!useAgent,
         ...(moduleId ? { module_id: moduleId } : {}),
         ...(scenarioId ? { scenario_id: scenarioId } : {}),
         ...(image?.base64
@@ -260,6 +374,7 @@ export const api = {
       moduleId?: string
       scenarioId?: string
       useRag?: boolean
+      useAgent?: boolean
     },
   ) =>
     request<{
@@ -269,6 +384,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({
         use_rag: !!opts?.useRag,
+        use_agent: !!opts?.useAgent,
         ...(opts?.prompt ? { prompt: opts.prompt } : {}),
         ...(opts?.moduleId ? { module_id: opts.moduleId } : {}),
         ...(opts?.scenarioId ? { scenario_id: opts.scenarioId } : {}),

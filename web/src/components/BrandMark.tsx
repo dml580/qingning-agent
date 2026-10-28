@@ -1,4 +1,4 @@
-/** 青柠品牌图标（用户自备图） */
+/** 青柠品牌图标 */
 export function BrandMark({ className = '' }: { className?: string }) {
   return (
     <img

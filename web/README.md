@@ -30,3 +30,17 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## 浏览器回归
+
+在 `web` 目录运行：
+
+```bash
+python3 -m pip install -r ../server/requirements.txt
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+Playwright 自动启动隔离后端（18000）和前端（4174），需保持这两个端口空闲。
+`tests/chat-reminder.spec.ts` 使用真实 API、SSE、提醒工具与临时 SQLite：从工作台发送提醒，校验提醒页的标题、日期时间，再切换页面并刷新确认持久化。外部模型使用演示模式，日历同步关闭，不读取已有数据库或模型运行时配置；临时数据库在服务退出时清理。

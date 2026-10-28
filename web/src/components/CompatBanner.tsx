@@ -15,12 +15,18 @@ function detectGaps(): string[] {
     gaps.push('不支持 color-mix，界面配色可能回退为较朴素样式')
   }
   try {
-    const major = Number(
-      (navigator.userAgent.match(/(?:Chrome|Chromium|Edg|Firefox|Version)\/(\d+)/) ||
-        [])[1] || 0,
-    )
-    if (major > 0 && major < 90) {
-      gaps.push(`浏览器内核版本偏旧（检测到约 ${major}），建议升级到近两年版本`)
+    const ua = navigator.userAgent
+    const browser = /Edg\/(\d+)/.exec(ua)
+      ? { name: 'Edge', major: Number(/Edg\/(\d+)/.exec(ua)?.[1]), minimum: 109 }
+      : /(?:Chrome|Chromium)\/(\d+)/.exec(ua)
+        ? { name: 'Chrome', major: Number(/(?:Chrome|Chromium)\/(\d+)/.exec(ua)?.[1]), minimum: 109 }
+        : /Firefox\/(\d+)/.exec(ua)
+          ? { name: 'Firefox', major: Number(/Firefox\/(\d+)/.exec(ua)?.[1]), minimum: 115 }
+          : /Version\/(\d+).+Safari\//.exec(ua)
+            ? { name: 'Safari', major: Number(/Version\/(\d+).+Safari\//.exec(ua)?.[1]), minimum: 16 }
+            : null
+    if (browser && browser.major > 0 && browser.major < browser.minimum) {
+      gaps.push(`${browser.name} 版本偏旧（检测到 ${browser.major}），建议升级到近两年版本`)
     }
   } catch {
     /* ignore */

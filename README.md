@@ -1,18 +1,50 @@
 # 青柠
 
-生活文书工作台：把合同与通知里的约定说明白。React 负责状态与渲染，Python 负责会话、SSE 推流、结束落库。
+一款面向真实生活场景的 **生活助理 Agent**。基于 React 打造高性能前端，Python 后端驱动工具调用与 RAG（检索增强生成），致力于解决日常琐事、文档分析与生活提醒。
 
-配好大模型密钥后走真流式；未配置则自动「演示模式」。可在页面「模型设置」里切换提供商（Key **只存本机后端**，不会进前端仓库）。
+## 项目定位
+
+项目不只是聊天界面，而是一个可在本机运行的 AI Agent 应用：
+
+- **Agent 编排**：支持最多 5 步 Skill 调用、可视化执行计划、单步重试和运行轨迹。
+- **Human-in-the-loop**：日历写入等有副作用的操作需要用户批准，可拒绝或重试。
+- **混合 RAG**：BM25 + 向量召回 + RRF/词面覆盖度重排，用于合同、通知和账单分析。
+- **AI 前端**：React 19 + TypeScript，SSE 流式输出、中断/重连、`seq` 去重、Markdown、图片上传与 PWA。
+- **本地优先**：FastAPI + SQLite，账号级数据隔离，支持备份/恢复，API Key 不保存在前端。
+
+## 核心功能
+
+- 用户名/密码统一登录注册，HttpOnly Cookie Session。
+- 会话、提醒、待办、记忆、文档记录和 Agent 轨迹按账号隔离。
+- 生活提醒支持日期/时分、浏览器通知和 macOS / Google / 飞书日历同步。
+- 文书图片压缩、相关性审核、OCR 与结构化提取。
+- 多模型提供商设置，包括豆包、DeepSeek、OpenAI、硅基流动和自定义兼容接口。
+- 当前账号数据导出/事务恢复，备份不包含密码、Cookie 和模型 API Key。
+
+## 内部 Skills
+
+| Skill | 作用 |
+|---|---|
+| `extract_amounts_dates` | 从文书中抽取金额与日期 |
+| `check_missing_clauses` | 检查场景关键条款是否出现 |
+| `extract_document` | 文档分类、摘要与结构化提取 |
+| `manage_reminder` | 生活提醒查询、新增与同步 |
+| `manage_todo` | 通用待办管理 |
+| `manage_calendar` | 日历状态、提醒同步与日程创建 |
+| `manage_memory` | 当前账号的显式记忆管理 |
+| `web_search` | 实时联网搜索 |
+| `get_weather` | 城市天气与预报 |
+| `get_current_time` | 当前日期、时间与星期 |
 
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/03-docs-chat.jpg" alt="文书分析：模版条、流状态、Markdown 与风险折叠" width="900" />
+  <img src="docs/screenshots/03-docs-chat.jpg" alt="青柠 Agent：流式推流、Markdown 与工具调用" width="900" />
 </p>
 
-| 文书分析（一模版一会话 · SSE 流状态） | 生活提醒（药箱 / 本机 SQLite） |
+| 生活助理 Agent（多模态 · RAG） | 生活提醒（任务看板 / SQLite） |
 |:---:|:---:|
-| <img src="docs/screenshots/01-docs-analysis.jpg" alt="文书侧栏与结构化分析" width="420" /> | <img src="docs/screenshots/02-reminders.jpg" alt="家庭药箱提醒看板" width="420" /> |
+| <img src="docs/screenshots/01-docs-analysis.jpg" alt="青柠生活助理 Agent" width="420" /> | <img src="docs/screenshots/02-reminders.jpg" alt="生活提醒看板" width="420" /> |
 
 <p align="center">
   <img src="docs/screenshots/04-model-settings.jpg" alt="模型设置：多提供商，Key 仅存本机" width="360" />
@@ -26,18 +58,34 @@
 - 通信：SSE（可中断、可重连、`seq` 去重）
 - 后端：FastAPI + SQLite
 - 模型：OpenAI 兼容 Chat Completions（豆包 / DeepSeek / 硅基流动 / 自定义等）
-- 产品模块：生活文书已上线；生活提醒预留；文书下 5 个场景模版
+- 评测：Python `unittest` + Agent eval + Playwright e2e
 
 ## 目录
 
 ```
-实时工作台/
+青柠/
 ├── web/          React + TypeScript
 ├── server/       Python FastAPI（含本机 data/，已 gitignore）
 └── docs/         路线图、虚拟列表对比说明
 ```
 
 ## 本地运行
+
+### 一键启动（推荐）
+
+```bash
+./scripts/local-dev.sh
+```
+
+脚本会先检查 Python / Node / npm、前后端依赖、`.env` 和 8000/5173 端口，然后同时启动前后端。按 `Ctrl+C` 会同时停止两个服务。
+
+只做环境检查、不启动：
+
+```bash
+./scripts/local-dev.sh --check
+```
+
+### 分别启动
 
 **1. 后端**
 
@@ -102,12 +150,36 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 密钥与 `server/data/` **不要提交 Git**。仓库：[dml580/qingning-workbench](https://github.com/dml580/qingning-workbench)。
 
+## 测试与评测
+
+```bash
+# 后端 Skill / 安全边界
+cd server && python3 -m unittest test_agent_core.py
+
+# Agent / RAG 离线评测
+cd server && python3 eval_agent.py
+
+# 前端构建
+cd web && npm run build
+
+# 登录、账号隔离、提醒主链路
+cd web && npm run test:e2e
+```
+
 ## 工程要点
 
 1. 会话列表、消息区、输入区拆开；流式状态 `connecting → generating → completed | failed | cancelled`。
 2. 失败/取消保留半截，**不会**落成 `completed`。
-3. 长内容虚拟列表 + 对比面板（见 `docs/virtual-list-compare.md`）。
-4. 助手消息可复制全文 / 导出 Markdown。
+3. Skill 注册表统一管理 JSON Schema、超时、副作用和确认动作。
+4. 外部搜索内容标记为不可信数据，不得当作系统指令。
+5. 助手消息可复制全文 / 导出 Markdown；长内容保留虚拟列表实现。
+
+## 当前边界
+
+- 项目当前以本机个人使用为主，未开放公网注册。
+- PWA 安装后仍依赖本机 FastAPI 后端运行。
+- macOS 本地日历同步只作用于运行后端的这台 Mac。
+- SQLite 适合当前本地规模；多实例、高并发和公网运营需另行升级。
 
 ## 许可
 
@@ -125,6 +197,6 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 - [虚拟列表对比截图](docs/virtual-list-compare.md)
 - [浏览器兼容](docs/浏览器兼容.md)
 
-## 待办
+## 后续路线
 
-下一优先：公网部署；有真实合同时做评测回归。
+详见 [待办与路线图](docs/待办与路线图.md)。当前优先补充真实脱敏评测集、能力管理交互和本地安装验收；公网部署暂缓。

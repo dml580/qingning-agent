@@ -1,5 +1,5 @@
 /**
- * Workbench state: modules/scenarios + sessions + stream lifecycle.
+ * Agent state: modules/scenarios + sessions + stream lifecycle.
  */
 
 import {
@@ -22,14 +22,7 @@ import type {
   Session,
 } from '../types'
 
-/** 文书侧栏：每个模版占一行，绑定该模版最近一次会话 */
-export interface ScenarioSlot {
-  scenarioId: string
-  name: string
-  session: Session | null
-}
-
-interface WorkbenchValue {
+interface AgentValue {
   catalog: Catalog | null
   modules: AppModule[]
   activeModuleId: string
@@ -37,8 +30,6 @@ interface WorkbenchValue {
   activeModule: AppModule | null
   activeScenario: Scenario | null
   sessions: Session[]
-  /** 文书模块：按 catalog 模版顺序的侧栏槽位；其它模块为 null */
-  scenarioSlots: ScenarioSlot[] | null
   currentSessionId: string | null
   currentSession: Session | null
   messages: Message[]
@@ -54,9 +45,9 @@ interface WorkbenchValue {
   bootstrap: () => Promise<void>
   refreshHealth: () => Promise<void>
   setModule: (moduleId: string) => Promise<void>
-  setScenario: (scenarioId: string) => Promise<void>
+  setScenario: (scenarioId: string) => void
   selectSession: (id: string) => Promise<void>
-  createSession: () => Promise<void>
+  createSession: () => void
   removeSession: (id: string) => Promise<void>
   send: (payload: {
     text: string
@@ -65,23 +56,16 @@ interface WorkbenchValue {
   }) => Promise<void>
   cancel: () => Promise<void>
   retry: (failedMessageId: string) => Promise<void>
+  actOnAgentStep: (
+    messageId: string,
+    stepIndex: number,
+    action: 'approve' | 'reject' | 'retry',
+  ) => Promise<void>
 }
 
-const WorkbenchContext = createContext<WorkbenchValue | null>(null)
+const AgentContext = createContext<AgentValue | null>(null)
 
-function latestSessionForScenario(
-  list: Session[],
-  scenarioId: string,
-): Session | null {
-  let best: Session | null = null
-  for (const s of list) {
-    if (s.scenario_id !== scenarioId) continue
-    if (!best || s.updated_at > best.updated_at) best = s
-  }
-  return best
-}
-
-export function WorkbenchProvider({ children }: { children: ReactNode }) {
+export function AgentProvider({ children }: { children: ReactNode }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [activeModuleId, setActiveModuleId] = useState('docs')
   const [activeScenarioId, setActiveScenarioId] = useState('general')
@@ -128,25 +112,8 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
   const currentSession =
     sessions.find((s) => s.id === currentSessionId) || null
 
-  const catalogRef = useRef(catalog)
-  catalogRef.current = catalog
-
-  const scenarioSlots = useMemo<ScenarioSlot[] | null>(() => {
-    if (activeModuleId !== 'docs' || !activeModule) return null
-    return activeModule.scenarios
-      .filter((sc) => !sc.hidden && sc.id !== 'companion')
-      .map((sc) => ({
-        scenarioId: sc.id,
-        name: sc.name,
-        session: latestSessionForScenario(sessions, sc.id),
-      }))
-  }, [activeModule, activeModuleId, sessions])
-
-  const scenarioTitle = useCallback((scenarioId: string, moduleId?: string) => {
-    const mid = moduleId ?? activeModuleIdRef.current
-    const mod = catalogRef.current?.modules.find((m) => m.id === mid)
-    return mod?.scenarios.find((s) => s.id === scenarioId)?.name || '文书分析'
-  }, [])
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
 
   const upsertMessage = useCallback((msg: Message) => {
     setMessages((prev) => {
@@ -190,6 +157,8 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
             status: 'generating',
           })
         },
+        onAgent: (agent) => patchMessage(messageId, { agent }),
+        onTool: (events) => patchMessage(messageId, { toolEvents: events }),
         onDone: (status, content) => {
           patchMessage(messageId, { status, content })
           setActiveAssistantId(null)
@@ -238,31 +207,21 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
         if (unfinished) {
           attachStream(id, unfinished.id, (unfinished.lastSeq ?? -1) + 1)
         }
+      } catch {
+        // 会话已不存在（例如库里刚清过空壳）：回到无会话空态，并刷新侧栏
+        setCurrentSessionId(null)
+        setMessages([])
+        try {
+          const mid = activeModuleIdRef.current
+          setSessions(await api.listSessions(mid))
+        } catch {
+          /* ignore */
+        }
       } finally {
         setLoading(false)
       }
     },
     [attachStream],
-  )
-
-  const openScenarioPanel = useCallback(
-    async (moduleId: string, scenarioId: string, list?: Session[]) => {
-      if (isStreamingRef.current) {
-        streamRef.current.stop()
-        setActiveAssistantId(null)
-      }
-      setActiveScenarioId(scenarioId)
-      const sessionsList = list ?? (await api.listSessions(moduleId))
-      setSessions(sessionsList)
-      const match = latestSessionForScenario(sessionsList, scenarioId)
-      if (match) {
-        await selectSession(match.id)
-      } else {
-        setCurrentSessionId(null)
-        setMessages([])
-      }
-    },
-    [selectSession],
   )
 
   const setModule = useCallback(
@@ -284,119 +243,56 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
         setSessions([])
         return
       }
-      if (moduleId === 'docs') {
-        await openScenarioPanel(moduleId, firstScen)
-        return
-      }
       const list = await api.listSessions(moduleId)
       setSessions(list)
       if (list[0]) await selectSession(list[0].id)
     },
-    [catalog, openScenarioPanel, selectSession],
+    [catalog, selectSession],
   )
 
-  const setScenario = useCallback(
-    async (scenarioId: string) => {
-      if (scenarioId === activeScenarioIdRef.current) return
-      const mid = activeModuleIdRef.current
-      // 文书：切换模版 = 切换到该模版自己的对话面板，不改写当前会话的 scenario
-      if (mid === 'docs') {
-        await openScenarioPanel(mid, scenarioId)
-        return
-      }
-      setActiveScenarioId(scenarioId)
-      const sid = currentSessionIdRef.current
-      if (sid) {
-        const updated = await api.patchSession(sid, mid, scenarioId)
-        setSessions((prev) =>
-          prev.map((s) => (s.id === sid ? { ...s, ...updated } : s)),
-        )
-      }
-    },
-    [openScenarioPanel],
-  )
+  const setScenario = useCallback((scenarioId: string) => {
+    if (scenarioId === activeScenarioIdRef.current) return
+    setActiveScenarioId(scenarioId)
+    const sid = currentSessionIdRef.current
+    if (!sid) return
+    const current = sessionsRef.current.find((s) => s.id === sid)
+    if (current?.scenario_id === scenarioId) return
+    // 换文书类型另起一条，不改写已经生成的记录
+    if (isStreamingRef.current) {
+      streamRef.current.stop()
+      setActiveAssistantId(null)
+    }
+    setCurrentSessionId(null)
+    setMessages([])
+  }, [])
 
   const clearActionError = useCallback(() => setActionError(null), [])
 
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(() => {
     if (!moduleAvailable) return
     setActionError(null)
-    const mid = activeModuleIdRef.current
-    const scen = activeScenarioIdRef.current
-    try {
-      // 文书：一模版只保留一轮对话；「重新开始」清掉该模版旧会话再开新的
-      if (mid === 'docs') {
-        const ok = window.confirm(
-          [
-            '重新开始当前模版对话？',
-            '',
-            `「${scenarioTitle(scen)}」下的旧消息将从本机删除，无法恢复。`,
-          ].join('\n'),
-        )
-        if (!ok) return
-        const list = await api.listSessions(mid)
-        const stale = list.filter((s) => s.scenario_id === scen)
-        for (const s of stale) {
-          await api.deleteSession(s.id)
-        }
-        const created = await api.createSession(scenarioTitle(scen), mid, scen)
-        const next = await api.listSessions(mid)
-        setSessions(next)
-        await selectSession(created.id)
-        return
-      }
-      const s = await api.createSession('新会话', mid, scen)
-      setSessions((prev) => [s, ...prev])
-      await selectSession(s.id)
-    } catch (e) {
-      setActionError(
-        e instanceof Error
-          ? e.message
-          : '无法新建会话，请检查后端是否在运行。',
-      )
+    if (isStreamingRef.current) {
+      streamRef.current.stop()
+      setActiveAssistantId(null)
     }
-  }, [moduleAvailable, scenarioTitle, selectSession])
+    // 先留白；发出第一条消息后才写入记录，旧记录保留
+    setCurrentSessionId(null)
+    setMessages([])
+  }, [moduleAvailable])
 
   const removeSession = useCallback(
     async (id: string) => {
       setActionError(null)
       try {
         const mid = activeModuleIdRef.current
-        const before = await api.listSessions(mid)
-        const victim = before.find((s) => s.id === id)
         await api.deleteSession(id)
-        // 文书：删掉该模版下历史重复会话，保证侧栏一模版一条
-        if (mid === 'docs' && victim) {
-          for (const s of before) {
-            if (s.id !== id && s.scenario_id === victim.scenario_id) {
-              await api.deleteSession(s.id)
-            }
-          }
-        }
         const next = await api.listSessions(mid)
         setSessions(next)
-        const wasCurrent =
-          currentSessionIdRef.current === id ||
-          (mid === 'docs' &&
-            victim &&
-            currentSessionIdRef.current &&
-            before.some(
-              (s) =>
-                s.id === currentSessionIdRef.current &&
-                s.scenario_id === victim.scenario_id,
-            ))
-        if (wasCurrent) {
+        if (currentSessionIdRef.current === id) {
           streamRef.current.stop()
           setActiveAssistantId(null)
-          if (mid === 'docs') {
-            setActiveScenarioId(
-              victim?.scenario_id || activeScenarioIdRef.current,
-            )
-            setCurrentSessionId(null)
-            setMessages([])
-          } else if (next[0]) {
-            await selectSession(next[0].id)
-          } else {
+          if (next[0]) await selectSession(next[0].id)
+          else {
             setCurrentSessionId(null)
             setMessages([])
           }
@@ -405,7 +301,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
         setActionError(
           e instanceof Error
             ? e.message
-            : '删除失败，会话可能仍留在本机数据库中。',
+            : '删除失败，记录可能仍留在本机数据库中。',
         )
       }
     },
@@ -430,43 +326,15 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       try {
         const mid = activeModuleIdRef.current
         const scen = activeScenarioIdRef.current
-        // 文书：发送前强制对齐「当前模版」会话，避免仍绑着其它模版的旧 session
-        if (mid === 'docs') {
-          const list = await api.listSessions(mid)
-          setSessions(list)
-          const bound = sid
-            ? list.find((s) => s.id === sid)
-            : undefined
-          if (!bound || bound.scenario_id !== scen) {
-            const match = latestSessionForScenario(list, scen)
-            if (match) {
-              sid = match.id
-              setCurrentSessionId(sid)
-              const detail = await api.getSession(sid)
-              setMessages(
-                detail.messages.map((m) => ({
-                  ...m,
-                  lastSeq:
-                    m.chunks && m.chunks.length
-                      ? Math.max(...m.chunks.map((c) => c.seq))
-                      : -1,
-                })),
-              )
-            } else {
-              sid = null
-            }
-          }
-        }
         if (!sid) {
-          const title =
-            mid === 'docs' ? scenarioTitle(scen, mid) : '新会话'
-          const s = await api.createSession(title, mid, scen)
+          const s = await api.createSession('新会话', mid, scen)
           setSessions((prev) => [s, ...prev])
           sid = s.id
           setCurrentSessionId(sid)
           setMessages([])
         }
         // 文书默认走迷你 RAG；短文由后端自动跳过，不暴露开关给用户
+        // 工具调用（抽条款 / 提醒 / 联网 / 天气 / 时间）默认开启
         const { user_message, assistant_message, rag } = await api.sendMessage(
           sid,
           text || (payload.imageBase64 ? '请根据上传的文书照片进行分析' : ''),
@@ -476,6 +344,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
             ? { base64: payload.imageBase64, mime: payload.imageMime }
             : undefined,
           mid === 'docs',
+          true,
         )
         upsertMessage(user_message)
         upsertMessage({
@@ -498,7 +367,6 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       attachStream,
       moduleAvailable,
       refreshSessions,
-      scenarioTitle,
       upsertMessage,
     ],
   )
@@ -535,6 +403,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
           moduleId: activeModuleIdRef.current,
           scenarioId: activeScenarioIdRef.current,
           useRag: activeModuleIdRef.current === 'docs',
+          useAgent: true,
         })
         upsertMessage({
           ...assistant_message,
@@ -553,6 +422,38 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
     },
     [attachStream, upsertMessage],
   )
+
+  const actOnAgentStep = useCallback(async (
+    messageId: string,
+    stepIndex: number,
+    action: 'approve' | 'reject' | 'retry',
+  ) => {
+    const message = messagesRef.current.find((item) => item.id === messageId)
+    const runId = message?.agent?.run_id
+    if (!runId) throw new Error('找不到该任务的运行记录')
+    const response = await api.agentStepAction(runId, stepIndex, action)
+    const nextStatus = response.step.status as
+      | 'completed' | 'failed' | 'waiting_confirmation' | 'rejected'
+    patchMessage(messageId, {
+      agent: message.agent
+        ? {
+            ...message.agent,
+            calls: message.agent.calls.map((call) =>
+              call.step_index === stepIndex
+                ? {
+                    ...call,
+                    ok: response.ok,
+                    status: nextStatus,
+                    summary:
+                      String(response.step.result.error || '') ||
+                      (response.ok ? '步骤已执行' : '步骤执行失败'),
+                  }
+                : call,
+            ),
+          }
+        : undefined,
+    })
+  }, [patchMessage])
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -576,8 +477,15 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
         docs?.scenarios.find((s) => !s.hidden && s.id !== 'companion')?.id ||
         'general'
       setActiveModuleId(docsId)
-      setActiveScenarioId(firstScen)
-      await openScenarioPanel(docsId, firstScen)
+      const list = await api.listSessions(docsId)
+      setSessions(list)
+      if (list[0]) {
+        await selectSession(list[0].id)
+      } else {
+        setActiveScenarioId(firstScen)
+        setCurrentSessionId(null)
+        setMessages([])
+      }
     } catch (e) {
       setBootError(
         e instanceof Error ? e.message : '无法连接后端，请先启动 server',
@@ -585,9 +493,9 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-  }, [openScenarioPanel])
+  }, [selectSession])
 
-  const value = useMemo<WorkbenchValue>(
+  const value = useMemo<AgentValue>(
     () => ({
       catalog,
       modules,
@@ -596,7 +504,6 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       activeModule,
       activeScenario,
       sessions,
-      scenarioSlots,
       currentSessionId,
       currentSession,
       messages,
@@ -619,6 +526,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       send,
       cancel,
       retry,
+      actOnAgentStep,
     }),
     [
       catalog,
@@ -628,7 +536,6 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
       activeModule,
       activeScenario,
       sessions,
-      scenarioSlots,
       currentSessionId,
       currentSession,
       messages,
@@ -655,14 +562,14 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <WorkbenchContext.Provider value={value}>
+    <AgentContext.Provider value={value}>
       {children}
-    </WorkbenchContext.Provider>
+    </AgentContext.Provider>
   )
 }
 
-export function useWorkbench() {
-  const ctx = useContext(WorkbenchContext)
-  if (!ctx) throw new Error('useWorkbench must be used within WorkbenchProvider')
+export function useAgent() {
+  const ctx = useContext(AgentContext)
+  if (!ctx) throw new Error('useAgent must be used within AgentProvider')
   return ctx
 }

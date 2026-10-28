@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import type { Message, MessageStatus } from '../types'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { Message, MessageStatus, ToolEvent } from '../types'
 import { AssistantMarkdown } from './AssistantMarkdown'
 import { GeneratingIndicator } from './GeneratingIndicator'
 import { PerfPanel } from './PerfPanel'
@@ -9,10 +9,16 @@ interface Props {
   messages: Message[]
   loading: boolean
   onRetry: (messageId: string) => void | Promise<void>
+  onAgentStep: (
+    messageId: string,
+    stepIndex: number,
+    action: 'approve' | 'reject' | 'retry',
+  ) => void | Promise<void>
   /** 无当前会话时的空态（例如刚删光会话） */
   noSession?: boolean
   /** 简历/面试对比用；日常聊天默认关闭 */
   showPerf?: boolean
+  emptyHeader?: ReactNode
 }
 
 const STATUS_LABEL: Record<MessageStatus, string> = {
@@ -21,6 +27,51 @@ const STATUS_LABEL: Record<MessageStatus, string> = {
   completed: '完成',
   failed: '失败',
   cancelled: '已取消',
+}
+
+interface LiveChip {
+  key: string
+  text: string
+  state: 'run' | 'ok' | 'fail'
+  title?: string
+}
+
+/** 把流式 tool 事件压成看得懂的进度条：规划 → 执行中 → 完成。 */
+function liveToolChips(events?: ToolEvent[]): LiveChip[] {
+  if (!events?.length) return []
+  const doneNames = new Set(
+    events.filter((e) => e.phase === 'done' && e.name).map((e) => e.name as string),
+  )
+  const chips: LiveChip[] = []
+  for (const ev of events) {
+    if (ev.phase === 'idle') {
+      chips.push({ key: `i${ev.seq}`, text: '本轮无需调用工具', state: 'ok' })
+    } else if (ev.phase === 'running' && ev.name && !doneNames.has(ev.name)) {
+      chips.push({
+        key: `r${ev.seq}`,
+        text: `${ev.label || ev.name} 进行中…`,
+        state: 'run',
+      })
+    } else if (ev.phase === 'done') {
+      chips.push({
+        key: `d${ev.seq}`,
+        text: ev.label || ev.name || '工具',
+        state: ev.ok === false ? 'fail' : 'ok',
+        title: ev.summary,
+      })
+    }
+  }
+  if (!chips.length) {
+    const planning = events.find((e) => e.phase === 'planning')
+    if (planning) {
+      chips.push({
+        key: `p${planning.seq}`,
+        text: '正在判断需要哪些工具…',
+        state: 'run',
+      })
+    }
+  }
+  return chips
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -58,8 +109,10 @@ export function MessageArea({
   messages,
   loading,
   onRetry,
+  onAgentStep,
   noSession = false,
   showPerf = false,
+  emptyHeader,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -148,33 +201,20 @@ export function MessageArea({
               <span />
               <span />
             </div>
-            <span>正在拉取会话</span>
+            <span>正在打开记录</span>
           </div>
         )}
         {!loading && !messages.length && (
-          <div className="empty-state">
-            <div className="glyph">◎</div>
-            {noSession ? (
-              <>
-                <h2>本模版还没有对话</h2>
-                <p>
-                  每个文书模版各自独立一轮对话。直接在下方发送文字或照片即可开始；左侧可切换模版查看其它板块的记录。
-                </p>
-              </>
-            ) : (
-              <>
-                <h2>开始本模版分析</h2>
-                <p>
-                  粘贴合同或通知全文，也可上传已打码的文书照片。切换上方其它模版会打开对应独立对话，不会混在同一面板里。
-                </p>
-              </>
-            )}
-            <ol className="empty-steps">
-              <li>确认上方模版与文书类型一致</li>
-              <li>粘贴全文或上传已打码照片</li>
-              <li>发送后看流状态；生成中可点「中断」</li>
-            </ol>
-            <p className="empty-disclaimer">结果仅供参考，非正式法律意见。</p>
+          <div className="empty-stage">
+            {emptyHeader ? <div className="empty-stage-top">{emptyHeader}</div> : null}
+            <div className="empty-state">
+              <div className="glyph">◎</div>
+              {noSession ? (
+                <h2>我在这，咱们开始吧</h2>
+              ) : (
+                <h2>继续说，我在听</h2>
+              )}
+            </div>
           </div>
         )}
         {retryError && (
@@ -227,16 +267,12 @@ export function MessageArea({
               className={`bubble ${m.role}${waiting ? ' waiting' : ''}`}
               data-status={m.status}
             >
-              <header>
-                <span className="role-row">
-                  <span className={`avatar ${m.role}`}>
-                    {m.role === 'user' ? '你' : '助'}
+              {m.role === 'assistant' && (
+                <header>
+                  <span className="role-row">
+                    <span className="avatar assistant">助</span>
+                    <span className="role">助手</span>
                   </span>
-                  <span className="role">
-                    {m.role === 'user' ? '你' : '助手'}
-                  </span>
-                </span>
-                {m.role === 'assistant' && (
                   <span className="bubble-meta">
                     {!waiting && (
                       <span className={`status-chip status-${m.status}`}>
@@ -251,9 +287,36 @@ export function MessageArea({
                         已引用原文 {m.rag.chunks?.length ?? 0} 段
                       </span>
                     )}
+                    {m.agent?.enabled
+                      ? m.agent.calls.map((c) => (
+                          <span
+                            key={c.name}
+                            className={`tool-chip${c.ok ? '' : ' is-failed'}`}
+                            title={c.summary}
+                          >
+                            {c.label}
+                          </span>
+                        ))
+                      : waiting
+                        ? liveToolChips(m.toolEvents).map((c) => (
+                            <span
+                              key={c.key}
+                              className={`tool-chip${
+                                c.state === 'fail'
+                                  ? ' is-failed'
+                                  : c.state === 'run'
+                                    ? ' is-running'
+                                    : ''
+                              }`}
+                              title={c.title}
+                            >
+                              {c.text}
+                            </span>
+                          ))
+                        : null}
                   </span>
-                )}
-              </header>
+                </header>
+              )}
 
               {m.role === 'user' ? (
                 <pre className="plain">{m.content}</pre>
@@ -279,6 +342,48 @@ export function MessageArea({
                 <pre className={`plain ${streaming ? 'typing-cursor' : ''}`}>
                   {body}
                 </pre>
+              )}
+
+              {m.role === 'assistant' && m.agent?.enabled && m.agent.calls.length > 0 && (
+                <details className="agent-plan" open={m.agent.calls.some((call) =>
+                  call.status === 'waiting_confirmation' || call.status === 'failed'
+                )}>
+                  <summary>
+                    执行计划
+                    <span>{m.agent.calls.filter((call) => call.status === 'completed').length}/{m.agent.calls.length}</span>
+                  </summary>
+                  <ol>
+                    {m.agent.calls.map((call, index) => (
+                      <li key={`${call.step_index || index}-${call.name}`} data-step-status={call.status}>
+                        <span className="agent-step-index">{index + 1}</span>
+                        <div className="agent-step-body">
+                          <strong>{call.label}</strong>
+                          <span>{call.summary}</span>
+                          {call.step_index && call.status === 'waiting_confirmation' && (
+                            <div className="agent-step-actions">
+                              <button className="btn primary small" type="button" onClick={() =>
+                                void onAgentStep(m.id, call.step_index!, 'approve')
+                              }>批准执行</button>
+                              <button className="btn ghost small" type="button" onClick={() =>
+                                void onAgentStep(m.id, call.step_index!, 'reject')
+                              }>拒绝</button>
+                            </div>
+                          )}
+                          {call.step_index && call.status === 'failed' && (
+                            <div className="agent-step-actions">
+                              <button className="btn ghost small" type="button" onClick={() =>
+                                void onAgentStep(m.id, call.step_index!, 'retry')
+                              }>重试此步骤</button>
+                            </div>
+                          )}
+                        </div>
+                        <span className="agent-step-state">
+                          {call.status === 'waiting_confirmation' ? '待确认' : call.status === 'completed' ? '完成' : call.status === 'rejected' ? '已拒绝' : '失败'}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
               )}
 
               {canExport && (

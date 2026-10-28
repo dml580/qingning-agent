@@ -404,7 +404,7 @@ export function PetChatDrawer({ open, onClose }: Props) {
           {!messages.length && (
             <div className="pet-chat-empty">
               <p>双击桌宠就找到我啦。</p>
-              <p className="muted">正式合同分析请用中间工作台的文书模版。</p>
+              <p className="muted">正式文档分析请用中间助理的功能模版。</p>
             </div>
           )}
           {messages.map((m) => (

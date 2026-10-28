@@ -1,5 +1,5 @@
 """
-Realtime workbench API.
+Realtime Agent API.
 
 States for assistant messages:
   connecting → generating → completed | failed | cancelled
@@ -14,14 +14,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from calendar_sync import (
+    delete_calendar_event,
+    local_alert_minutes,
+    sync_status,
+)
+import auth
 import db
 from catalog import (
     default_ids,
@@ -33,26 +43,162 @@ from catalog import (
 )
 from llm import (
     clear_runtime_settings,
+    extract_document_image_ocr,
     get_public_settings,
     provider_info,
     review_document_image,
     update_runtime_settings,
 )
 from rag import build_rag_user_prompt, retrieve_chunks
+from reminder_skill import create_reminder_entry, sync_existing_reminder
 from stream_engine import GenerationJob, cancel_job, get_job, register_job, run_generation
+from tools import execute_tool
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await db.init_db()
+    await db.purge_expired_auth_sessions()
     yield
 
 
-app = FastAPI(title="Realtime Workbench", lifespan=lifespan)
+app = FastAPI(title="青柠 · 生活助理 Agent", lifespan=lifespan)
 
+
+@app.exception_handler(Exception)
+async def api_unhandled_exception(_request: Request, error: Exception):
+    """未知 API 异常返回中文，详细堆栈保留在服务端日志。"""
+    import logging
+
+    logging.getLogger("uvicorn.error").exception("未处理的 API 异常", exc_info=error)
+    return JSONResponse({"detail": "服务器暂时出错，请稍后重试"}, status_code=500)
+
+
+def _cors_origins() -> list[str]:
+    raw = (os.getenv("CORS_ALLOW_ORIGINS") or "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+# 公开接口：无需登录（健康检查 + 鉴权自身）。
+PUBLIC_PATHS = frozenset(
+    {"/api/health", "/api/auth/status", "/api/auth/setup", "/api/auth/login"}
+)
+
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    """除公开接口外，所有 /api/* 需有效会话 Cookie。"""
+    path = request.url.path
+    if (
+        not path.startswith("/api/")
+        or path in PUBLIC_PATHS
+        or request.method == "OPTIONS"
+    ):
+        return await call_next(request)
+    user = await auth.resolve_session(request.cookies.get(auth.SESSION_COOKIE))
+    if not user:
+        return JSONResponse({"detail": "请先登录"}, status_code=401)
+    request.state.user_id = user["id"]
+    token = db.set_current_user(user["id"])
+    try:
+        return await call_next(request)
+    finally:
+        db.reset_current_user(token)
+
+
+class AuthPasswordBody(BaseModel):
+    username: str = Field(..., min_length=1, max_length=40)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class RestoreBackupBody(BaseModel):
+    confirm_username: str = Field(..., min_length=1, max_length=40)
+    backup: Dict[str, Any]
+
+
+@app.get("/api/auth/status")
+async def api_auth_status(request: Request):
+    """前端启动探针：是否已设密码、当前是否已登录。"""
+    owner = await db.get_owner()
+    user = await auth.resolve_session(request.cookies.get(auth.SESSION_COOKIE))
+    return {
+        "configured": owner is not None,
+        "authenticated": user is not None,
+        "user_id": user["id"] if user else None,
+    }
+
+
+@app.post("/api/auth/setup")
+@app.post("/api/auth/login")
+async def api_auth_login(body: AuthPasswordBody, response: Response):
+    """用户名存在则校验密码，否则注册并立即登录。旧账号用户名为 owner。"""
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(400, "请输入用户名")
+    if len(body.password.encode("utf-8")) > 72:
+        raise HTTPException(400, "密码不能超过 72 字节")
+    user = await db.get_user(username)
+    registered = False
+    if not user:
+        password_hash = await auth.hash_password_async(body.password)
+        try:
+            user = await db.create_user(username, password_hash)
+            registered = True
+        except sqlite3.IntegrityError:
+            # 并发注册同名账号时，仍须验证已创建账号的密码。
+            user = await db.get_user(username)
+    if not user or not await auth.verify_password_async(body.password, user["password_hash"]):
+        raise HTTPException(401, "用户名或密码不正确")
+    sid = await auth.start_session(user["id"])
+    auth.set_session_cookie(response, sid)
+    return {"ok": True, "user_id": user["id"], "registered": registered}
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request, response: Response):
+    sid = request.cookies.get(auth.SESSION_COOKIE)
+    if sid:
+        await db.delete_auth_session(sid)
+    auth.clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def api_auth_me(request: Request):
+    user = await auth.resolve_session(request.cookies.get(auth.SESSION_COOKIE))
+    if not user:
+        raise HTTPException(401, "请先登录")
+    return {"user_id": user["id"], "created_at": user["created_at"]}
+
+
+@app.get("/api/data/backup")
+async def api_export_account_backup():
+    """导出当前账号的业务数据；不包含密码、Cookie 或模型 API Key。"""
+    return await db.export_current_user_data()
+
+
+@app.get("/api/data/backup/status")
+async def api_account_backup_status():
+    return await db.backup_status()
+
+
+@app.post("/api/data/restore")
+async def api_restore_account_backup(body: RestoreBackupBody, request: Request):
+    if body.confirm_username.strip() != request.state.user_id:
+        raise HTTPException(400, "确认用户名与当前账号不一致")
+    try:
+        counts = await db.restore_current_user_data(body.backup)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "counts": counts, "restored_at": __import__("time").time()}
+
+
+# CORS 最后加入 => 位于鉴权中间件外层，401 也能带上正确的 CORS 头。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,6 +219,8 @@ class SendMessageBody(BaseModel):
     scenario_id: Optional[str] = None
     # 开启后对粘贴长文切块检索，再把片段注入提示词（迷你 RAG）
     use_rag: bool = False
+    # 开启后先让模型选本机工具（抽条款 / 提醒 / 联网 / 天气 / 时间）
+    use_agent: bool = False
 
 
 class RetryBody(BaseModel):
@@ -82,6 +230,7 @@ class RetryBody(BaseModel):
     module_id: Optional[str] = None
     scenario_id: Optional[str] = None
     use_rag: bool = False
+    use_agent: bool = False
 
 
 class PatchSessionBody(BaseModel):
@@ -110,6 +259,7 @@ class CreateReminderBody(BaseModel):
     category: str = Field(..., pattern="^(medicine|pet)$")
     title: str = Field(..., min_length=1, max_length=120)
     due_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    due_time: str = Field("", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$")
     note: str = Field("", max_length=500)
     notify_browser: bool = True
 
@@ -117,6 +267,7 @@ class CreateReminderBody(BaseModel):
 class PatchReminderBody(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     due_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    due_time: Optional[str] = Field(None, pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$")
     note: Optional[str] = Field(None, max_length=500)
     done: Optional[bool] = None
     notify_browser: Optional[bool] = None
@@ -192,25 +343,84 @@ async def api_due_reminders(
 
 @app.post("/api/reminders")
 async def api_create_reminder(body: CreateReminderBody):
-    return await db.create_reminder(
+    created = await create_reminder_entry(
         category=body.category,
-        title=body.title.strip(),
+        title=body.title,
         due_date=body.due_date,
-        note=(body.note or "").strip(),
+        due_time=body.due_time,
+        note=body.note or "",
         notify_browser=body.notify_browser,
     )
+    return created["item"]
+
+
+@app.get("/api/calendar/status")
+async def api_calendar_status():
+    """日历同步能力与授权状态，供前端展示与授权引导。"""
+    status = sync_status()
+    return {
+        **status,
+        "alert_minutes": local_alert_minutes(),
+        "guide": (
+            "首次同步时 macOS 会弹出授权窗口，请点「允许」。"
+            "若已拒绝，可在「系统设置 → 隐私与安全性 → 自动化」里重新勾选日历。"
+        ),
+    }
+
+
+@app.post("/api/reminders/{reminder_id}/sync-calendar")
+async def api_sync_reminder_calendar(reminder_id: str):
+    """把已有提醒写入日历，首次调用会触发系统授权弹窗。"""
+    target = await db.get_reminder(reminder_id)
+    if not target:
+        raise HTTPException(404, "提醒不存在")
+    result = await sync_existing_reminder(target)
+    if not result.get("ok"):
+        error = str(result.get("reason") or "同步到日历失败")
+        denied = "-1743" in error or "未获得系统授权" in error
+        return {
+            "ok": False,
+            "code": "perm_denied" if denied else "sync_failed",
+            "reason": error,
+            "guide": (
+                "请在「系统设置 → 隐私与安全性 → 自动化」里允许控制「日历」，然后重试。"
+                if denied
+                else "稍后重试，或先只保留应用内提醒。"
+            ),
+        }
+    return {
+        "ok": True,
+        "provider": result.get("provider") or "",
+        "event_url": result.get("event_url") or "",
+        "alert_minutes": result.get("alert_minutes"),
+        "already_synced": bool(result.get("already_synced")),
+        "item": result.get("item") or target,
+    }
 
 
 @app.patch("/api/reminders/{reminder_id}")
 async def api_patch_reminder(reminder_id: str, body: PatchReminderBody):
+    existing = await db.get_reminder(reminder_id)
+    if not existing:
+        raise HTTPException(404, "提醒不存在")
     data = body.model_dump(exclude_unset=True)
     if "title" in data and data["title"] is not None:
         data["title"] = data["title"].strip()
     if "note" in data and data["note"] is not None:
         data["note"] = data["note"].strip()
     updated = await db.update_reminder(reminder_id, **data)
-    if not updated:
-        raise HTTPException(404, "提醒不存在")
+    if data.get("done") is True and existing.get("calendar_provider") and existing.get("calendar_event_id"):
+        sync_result = await delete_calendar_event(
+            provider=str(existing.get("calendar_provider") or ""),
+            event_id=str(existing.get("calendar_event_id") or ""),
+        )
+        if sync_result.get("ok"):
+            updated = await db.update_reminder(
+                reminder_id,
+                calendar_provider="",
+                calendar_event_id="",
+                calendar_event_url="",
+            ) or updated
     return updated
 
 
@@ -226,7 +436,7 @@ async def api_delete_reminder(reminder_id: str):
 async def api_review_image(body: ReviewImageBody):
     """审核上传图片是否为当前文书模版相关照片。"""
     if body.module_id != "docs":
-        raise HTTPException(400, "仅生活文书支持图片上传")
+        raise HTTPException(400, "仅生活助理 Agent 支持图片上传")
     _validate_ids(body.module_id, body.scenario_id)
     scen = get_scenario(body.module_id, body.scenario_id)
     assert scen is not None
@@ -252,6 +462,116 @@ async def api_review_image(body: ReviewImageBody):
         mime=mime,
     )
     return result
+
+
+@app.get("/api/document-captures")
+async def api_list_document_captures(
+    session_id: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+):
+    return await db.list_document_captures(
+        session_id=session_id,
+        kind=kind,
+        limit=limit,
+    )
+
+@app.get("/api/todos")
+async def api_list_todos(include_done: bool = False):
+    return await db.list_todos(include_done=include_done)
+
+class TodoBody(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+    note: str = Field(default="", max_length=500)
+    due_date: str = ""
+    due_time: str = ""
+
+@app.post("/api/todos")
+async def api_create_todo(body: TodoBody):
+    return await db.create_todo(title=body.title.strip(), note=body.note.strip(), due_date=body.due_date, due_time=body.due_time)
+
+@app.patch("/api/todos/{todo_id}")
+async def api_patch_todo(todo_id: str, done: bool = False):
+    item = await db.update_todo(todo_id, done=done)
+    if not item: raise HTTPException(404, "待办不存在")
+    return item
+
+@app.delete("/api/todos/{todo_id}")
+async def api_delete_todo(todo_id: str):
+    if not await db.delete_todo(todo_id): raise HTTPException(404, "待办不存在")
+    return {"ok": True}
+
+@app.get("/api/memory")
+async def api_list_memory():
+    return await db.list_memory()
+
+class MemoryBody(BaseModel):
+    key: str
+    value: str = ""
+
+@app.put("/api/memory/{key}")
+async def api_put_memory(key: str, body: MemoryBody):
+    await db.set_memory(key, body.value)
+    return {"ok": True}
+
+@app.delete("/api/memory/{key}")
+async def api_delete_memory(key: str):
+    return {"ok": await db.delete_memory(key)}
+
+
+@app.get("/api/todos")
+async def api_list_todos(include_done: bool = False):
+    return await db.list_todos(include_done=include_done)
+
+
+@app.get("/api/memory")
+async def api_list_memory():
+    return await db.list_memory()
+
+
+@app.get("/api/metrics/usage")
+async def api_usage_metrics(days: int = Query(7, ge=1, le=90)):
+    """近 N 天 Token 用量与耗时聚合，供评测与成本观察使用。"""
+    return await db.summarize_llm_usage(days=days)
+
+
+@app.get("/api/agent/runs")
+async def api_agent_runs(limit: int = Query(30, ge=1, le=100)):
+    """当前账号的 Agent 执行轨迹，用于失败回放和诊断。"""
+    return await db.list_agent_runs(limit=limit)
+
+
+@app.post("/api/agent/runs/{run_id}/steps/{step_index}/{action}")
+async def api_agent_step_action(run_id: str, step_index: int, action: str):
+    """批准、拒绝或重试单个 Agent 步骤。"""
+    if action not in {"approve", "reject", "retry"}:
+        raise HTTPException(400, "操作只能是 approve、reject 或 retry")
+    step = await db.get_agent_step(run_id, step_index)
+    if not step:
+        raise HTTPException(404, "步骤不存在")
+    if action == "reject":
+        result = {"ok": False, "code": "user_rejected", "error": "用户已拒绝执行"}
+        await db.update_agent_step_result(run_id, step_index, result, "rejected")
+        return {"ok": True, "step": {**step, "status": "rejected", "result": result}}
+    if action == "approve" and step["result"].get("code") != "confirmation_required":
+        raise HTTPException(409, "该步骤不在等待确认状态")
+    if action == "retry" and step["status"] != "failed":
+        raise HTTPException(409, "只有失败的步骤可以重试")
+    result = await execute_tool(
+        step["skill_name"], step["arguments"], scenario_id="general",
+        user_text="用户已明确确认同步到日历" if action == "approve" else "重试原步骤",
+    )
+    status = "completed" if result.get("ok") else "failed"
+    await db.update_agent_step_result(run_id, step_index, result, status)
+    await db.settle_agent_run(run_id, status if status == "failed" else "completed", str(result.get("error") or ""))
+    return {"ok": bool(result.get("ok")), "step": {**step, "status": status, "result": result}}
+
+
+@app.delete("/api/metrics/usage")
+async def api_clear_usage_metrics(days: int = Query(0, ge=0, le=365)):
+    """清理用量记录；days=0 表示全部清空。"""
+    removed = await db.clear_llm_usage(older_than_days=days)
+    return {"removed": removed}
 
 
 def _validate_ids(module_id: str, scenario_id: str) -> None:
@@ -351,6 +671,7 @@ async def _start_generation(
     image_base64: Optional[str] = None,
     image_mime: Optional[str] = None,
     use_rag: bool = False,
+    use_agent: bool = False,
 ) -> Dict[str, Any]:
     sess = await db.get_session(session_id)
     if not sess:
@@ -372,9 +693,13 @@ async def _start_generation(
     _validate_ids(mid, sid)
 
     image_data_url = _image_data_url(image_base64, image_mime)
+    ocr_meta: Dict[str, Any] = {
+        "ok": False,
+        "doc_type": "unknown",
+    }
     if image_data_url:
         if mid != "docs":
-            raise HTTPException(400, "仅生活文书支持图片")
+            raise HTTPException(400, "仅生活助理 Agent 支持图片")
         scen = get_scenario(mid, sid)
         assert scen is not None
         review = await review_document_image(
@@ -393,6 +718,10 @@ async def _start_generation(
                     or "图片未通过文书相关性审核，请上传相关文书照片。",
                 },
             )
+        ocr_meta = await extract_document_image_ocr(
+            image_base64 or "",
+            mime=image_mime or "image/jpeg",
+        )
 
     store_prompt = prompt.strip()
     if image_data_url and "【附文书照片】" not in store_prompt:
@@ -412,7 +741,7 @@ async def _start_generation(
         "chunks": [],
     }
     if use_rag and mid == "docs":
-        retrieved = retrieve_chunks(store_prompt, scenario_id=sid)
+        retrieved = retrieve_chunks(store_prompt, session_id=session_id, scenario_id=sid)
         rag_meta = {
             "requested": True,
             "enabled": bool(retrieved.get("enabled")),
@@ -432,15 +761,55 @@ async def _start_generation(
                 "并在要点中标注「片段N」；片段未覆盖处写「原文未写清」。"
             )
     elif use_rag:
-        rag_meta["reason"] = "仅生活文书支持检索增强"
+        rag_meta["reason"] = "仅生活助理 Agent 支持检索增强"
+
+    if image_data_url and ocr_meta.get("ok"):
+        ocr_lines = [
+            "【图片识别结果】以下内容来自本地 OCR 结构化提取，可用于辅助回答，但看不清的字段不要当成确定事实。",
+            f"类型：{ocr_meta.get('doc_type')}",
+        ]
+        if ocr_meta.get("title"):
+            ocr_lines.append(f"标题：{ocr_meta.get('title')}")
+        if ocr_meta.get("summary"):
+            ocr_lines.append(f"摘要：{ocr_meta.get('summary')}")
+        points = ocr_meta.get("key_points") or []
+        for idx, item in enumerate(points[:6], start=1):
+            ocr_lines.append(f"要点{idx}：{item}")
+        med = ocr_meta.get("medicine") or {}
+        if isinstance(med, dict) and any(str(v).strip() for v in med.values()):
+            ocr_lines.append("药品信息：" + json.dumps(med, ensure_ascii=False))
+        bill = ocr_meta.get("bill") or {}
+        if isinstance(bill, dict) and any(str(v).strip() for v in bill.values()):
+            ocr_lines.append("账单信息：" + json.dumps(bill, ensure_ascii=False))
+        if ocr_meta.get("raw_excerpt"):
+            ocr_lines.append(f"原文摘录：{ocr_meta.get('raw_excerpt')}")
+        llm_prompt = f"{llm_prompt}\n\n" + "\n".join(ocr_lines)
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            "【图片 OCR】若用户上传了图片且消息里带有【图片识别结果】，"
+            "可结合这些结果帮助整理说明书、账单和文书重点；"
+            "但模糊字段必须明确说不确定，不得编造。"
+        )
 
     user_msg = None
     if insert_user:
         user_msg = await db.insert_message(
             session_id, role="user", content=store_prompt, status="completed"
         )
-        if sess["title"] in ("新会话", "New chat"):
-            await db.touch_session(session_id, title=store_prompt[:24] or "新会话")
+        # 第一条用户提问写成记录标题；之后再发不再改标题
+        if await db.count_messages(session_id, role="user") == 1:
+            await db.touch_session(
+                session_id, title=db.ask_title(store_prompt, sess["title"])
+            )
+        if image_data_url and ocr_meta.get("ok"):
+            await db.create_document_capture(
+                session_id=session_id,
+                source_message_id=user_msg["id"],
+                kind=str(ocr_meta.get("doc_type") or "generic_document"),
+                title=str(ocr_meta.get("title") or ""),
+                summary=str(ocr_meta.get("summary") or ""),
+                payload=ocr_meta,
+            )
 
     assistant = await db.insert_message(
         session_id, role="assistant", content="", status="connecting"
@@ -459,6 +828,10 @@ async def _start_generation(
         history=history,
         system_prompt=system_prompt,
         image_data_url=image_data_url,
+        user_text=store_prompt,
+        module_id=mid,
+        scenario_id=sid,
+        use_agent=bool(use_agent),
     )
     register_job(job)
 
@@ -475,6 +848,7 @@ async def _start_generation(
         "module_id": mid,
         "scenario_id": sid,
         "rag": rag_meta,
+        "ocr": ocr_meta if ocr_meta.get("ok") else {"ok": False, "doc_type": "unknown"},
     }
     if user_msg is not None:
         result["user_message"] = user_msg
@@ -497,6 +871,7 @@ async def api_send_message(session_id: str, body: SendMessageBody):
         image_base64=body.image_base64,
         image_mime=body.image_mime,
         use_rag=bool(body.use_rag),
+        use_agent=bool(body.use_agent),
     )
 
 
@@ -534,6 +909,7 @@ async def api_retry(session_id: str, message_id: str, body: RetryBody = RetryBod
         scenario_id=body.scenario_id,
         insert_user=False,
         use_rag=bool(body.use_rag),
+        use_agent=bool(body.use_agent),
     )
 
 
@@ -644,6 +1020,8 @@ async def api_stream(
         yield _sse("status", {"message_id": message_id, "status": "generating"})
 
         last_sent = from_seq - 1
+        agent_revision = ""
+        tool_sent = 0
 
         while True:
             if await request.is_disconnected():
@@ -664,6 +1042,23 @@ async def api_stream(
                         event_id=c.seq,
                     )
                     last_sent = c.seq
+
+                # 流式 tool 事件：整表推送，前端替换即可，天然幂等（重连也能补齐）。
+                if len(job.tool_events) != tool_sent:
+                    tool_sent = len(job.tool_events)
+                    yield _sse(
+                        "tool",
+                        {"message_id": message_id, "events": list(job.tool_events)},
+                    )
+
+                meta = job.agent_meta
+                current_agent_revision = json.dumps(meta, sort_keys=True, ensure_ascii=False) if meta else ""
+                if current_agent_revision != agent_revision and meta and meta.get("enabled"):
+                    agent_revision = current_agent_revision
+                    yield _sse(
+                        "agent",
+                        {"message_id": message_id, "agent": meta},
+                    )
 
                 if job.cancel_event.is_set() or job.done or job.failed:
                     # Wait for DB settle so client sees authoritative status.
@@ -787,6 +1182,40 @@ async def api_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+
+def _mount_frontend() -> None:
+    """同一端口同时提供页面和 /api，公网只暴露这一个地址。"""
+    if not WEB_DIST.is_dir():
+        return
+    assets = WEB_DIST / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def spa_index():
+        return FileResponse(WEB_DIST / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_files(full_path: str):
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(404)
+        root = WEB_DIST.resolve()
+        candidate = (WEB_DIST / full_path).resolve()
+        if not str(candidate).startswith(str(root)):
+            raise HTTPException(404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        index = WEB_DIST / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        raise HTTPException(404)
+
+
+_mount_frontend()
 
 
 if __name__ == "__main__":

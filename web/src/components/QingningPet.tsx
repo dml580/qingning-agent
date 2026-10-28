@@ -54,13 +54,15 @@ function clamp(v: number, min: number, max: number) {
 function dockPos(preferY?: number) {
   const w = typeof window !== 'undefined' ? window.innerWidth : 1200
   const h = typeof window !== 'undefined' ? window.innerHeight : 800
-  const fallbackY = h * 0.58 - SIZE / 2
+  const mobile = w <= 768
+  const fallbackY = mobile ? 168 : h * 0.58 - SIZE / 2
+  const bottomGap = mobile ? 88 : 24
   return {
     x: Math.max(8, w - DOCK_VISIBLE),
     y: clamp(
       typeof preferY === 'number' && !Number.isNaN(preferY) ? preferY : fallbackY,
-      96,
-      h - SIZE - 48,
+      mobile ? 64 : 72,
+      h - SIZE - bottomGap,
     ),
   }
 }
@@ -215,7 +217,7 @@ export function QingningPet({ onOpenChat }: Props) {
       setFrame(0)
       return
     }
-    const cfg = ANIM[phase]
+    const cfg = ANIM[phase as keyof typeof ANIM]
     const interval = 1000 / cfg.fps
     const id = window.setInterval(() => {
       setFrame((f) => (f + 1) % cfg.count)

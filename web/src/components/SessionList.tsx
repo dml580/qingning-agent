@@ -1,23 +1,26 @@
 import type { Session } from '../types'
-import type { ScenarioSlot } from '../context/WorkbenchContext'
 import { BrandMark } from './BrandMark'
+import { UserProfileMenu } from './UserProfileMenu'
 
 interface Props {
   sessions: Session[]
   currentId: string | null
-  /** 文书模块：按模版分槽，一模版一行 */
-  scenarioSlots?: ScenarioSlot[] | null
-  activeScenarioId?: string
-  scenarioLabel?: (s: Session) => string
   onSelect: (id: string) => void
-  /** 点击尚无会话的模版槽 */
-  onOpenScenario?: (scenarioId: string) => void
   onCreate: () => void
   onRemove: (id: string) => void | Promise<void>
+  collapsed?: boolean
+  onToggleCollapse?: () => void
   createDisabled?: boolean
   createLabel?: string
-  /** 非会话模块时的侧栏说明 */
+  /** 非对话模块时的侧栏说明 */
   modeHint?: string
+  username: string
+  onOpenModelSettings: () => void
+  onOpenPrivacy: () => void
+  onOpenSkills: () => void
+  onInstall?: () => void
+  installingApp?: boolean
+  onLogout: () => void
 }
 
 function formatTime(ts: number) {
@@ -28,40 +31,59 @@ function formatTime(ts: number) {
 export function SessionList({
   sessions,
   currentId,
-  scenarioSlots,
-  activeScenarioId,
-  scenarioLabel,
   onSelect,
-  onOpenScenario,
   onCreate,
   onRemove,
+  collapsed = false,
+  onToggleCollapse,
   createDisabled,
-  createLabel = '新建会话',
+  createLabel = '新对话',
   modeHint,
+  username,
+  onOpenModelSettings,
+  onOpenPrivacy,
+  onOpenSkills,
+  onInstall,
+  installingApp,
+  onLogout,
 }: Props) {
   function confirmRemove(id: string, title: string) {
     const ok = window.confirm(
       [
-        '确定删除该会话？',
+        '确定删除这条记录？',
         '',
-        `「${title || '未命名会话'}」及其全部消息将从本机数据库永久清除，无法恢复。`,
+        `「${title || '未命名记录'}」及其全部消息将从本机数据库永久清除，无法恢复。`,
       ].join('\n'),
     )
     if (!ok) return
     void onRemove(id)
   }
 
-  const byScenario = !!scenarioSlots?.length
-
   return (
-    <aside className="session-list">
+    <aside className={`session-list${collapsed ? ' is-collapsed' : ''}`}>
       <div className="session-head">
-        <div className="brand with-logo">
-          <BrandMark />
-          <div className="brand-copy">
-            <h1>青柠</h1>
-            <p className="brand-sub">生活文书工作台</p>
+        <div className="session-head-row">
+          <div className="brand with-logo">
+            <BrandMark />
+            <div className="brand-copy">
+              <h1>青柠</h1>
+              <p className="brand-sub">生活助理 Agent</p>
+            </div>
           </div>
+          {onToggleCollapse && (
+            <button
+              type="button"
+              className="session-collapse-btn"
+              onClick={onToggleCollapse}
+              title={collapsed ? '展开记录区' : '收起记录区'}
+              aria-label={collapsed ? '展开记录区' : '收起记录区'}
+            >
+              <span
+                className={`session-nav-icon ${collapsed ? 'is-expand' : 'is-collapse'}`}
+                aria-hidden
+              />
+            </button>
+          )}
         </div>
         <button
           type="button"
@@ -72,86 +94,51 @@ export function SessionList({
           {createLabel}
         </button>
       </div>
-      {byScenario ? (
-        <ul className="session-slots">
-          {scenarioSlots!.map((slot) => {
-            const active = slot.scenarioId === activeScenarioId
-            const sid = slot.session?.id
-            return (
-              <li
-                key={slot.scenarioId}
-                className={active ? 'active' : undefined}
-                onClick={() => {
-                  if (sid) onSelect(sid)
-                  else onOpenScenario?.(slot.scenarioId)
+      <ul>
+        {sessions.map((s) => (
+          <li
+            key={s.id}
+            className={s.id === currentId ? 'active' : undefined}
+            onClick={() => onSelect(s.id)}
+          >
+            <div className="session-title">{s.title}</div>
+            <div className="session-meta">
+              <span>{formatTime(s.updated_at)}</span>
+              <button
+                type="button"
+                className="link"
+                title="删除这条记录"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  confirmRemove(s.id, s.title)
                 }}
               >
-                <div className="session-title">{slot.name}</div>
-                <div className="session-meta">
-                  <span>
-                    {slot.session
-                      ? formatTime(slot.session.updated_at)
-                      : '尚未开始'}
-                  </span>
-                  {sid ? (
-                    <button
-                      type="button"
-                      className="link"
-                      title="删除该模版对话"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        confirmRemove(sid, slot.name)
-                      }}
-                    >
-                      删除
-                    </button>
-                  ) : null}
-                </div>
-              </li>
-            )
-          })}
-        </ul>
-      ) : (
-        <ul>
-          {sessions.map((s) => (
-            <li
-              key={s.id}
-              className={s.id === currentId ? 'active' : undefined}
-              onClick={() => onSelect(s.id)}
-            >
-              <div className="session-title">{s.title}</div>
-              <div className="session-meta">
-                <span>
-                  {scenarioLabel?.(s) ? `${scenarioLabel(s)} · ` : ''}
-                  {formatTime(s.updated_at)}
-                </span>
-                <button
-                  type="button"
-                  className="link"
-                  title="删除会话（本机永久清除）"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    confirmRemove(s.id, s.title)
-                  }}
-                >
-                  删除
-                </button>
-              </div>
-            </li>
-          ))}
-          {!sessions.length && (
-            <li className="empty">
-              <div className="session-empty-title">
-                {modeHint ? '无需会话' : '当前板块还没有会话'}
-              </div>
-              <p className="session-empty-hint">
-                {modeHint ||
-                  '点上方「新建会话」，或直接在右侧发送消息自动创建。删除会话会同步清掉本机 SQLite 中的记录。'}
-              </p>
-            </li>
-          )}
-        </ul>
-      )}
+                删除
+              </button>
+            </div>
+          </li>
+        ))}
+        {!sessions.length && (
+          <li className="empty">
+            <div className="session-empty-title">
+              {modeHint ? '无需记录' : '还没有记录'}
+            </div>
+            <p className="session-empty-hint">
+              {modeHint ||
+                '发送一条消息后，这条对话会出现在这里。删除只去掉对应的一条。'}
+            </p>
+          </li>
+        )}
+      </ul>
+      <UserProfileMenu
+        username={username}
+        onOpenModelSettings={onOpenModelSettings}
+        onOpenPrivacy={onOpenPrivacy}
+        onOpenSkills={onOpenSkills}
+        onInstall={onInstall}
+        installingApp={installingApp}
+        onLogout={onLogout}
+      />
     </aside>
   )
 }
