@@ -1219,6 +1219,7 @@ def heuristic_tool_calls(
 ) -> List[Dict[str, Any]]:
     """没配模型、或模型不支持 tools 时的保底选择。"""
     text = (user_text or "").strip()
+    text = text.replace("提行", "提醒").replace("天汽", "天气")
     calls: List[Dict[str, Any]] = []
     if not text:
         return calls
@@ -1289,7 +1290,7 @@ def heuristic_tool_calls(
     reminder_hit = any(
         k in text
         for k in (
-            "提醒",
+            "提醒", "到点儿叫我",
             "记一下",
             "帮我记",
             "过期",

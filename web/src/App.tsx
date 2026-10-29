@@ -14,6 +14,7 @@ import { ReminderBoard } from './components/ReminderBoard'
 import { ScenarioBar } from './components/ScenarioBar'
 import { SessionList } from './components/SessionList'
 import { SkillCenter } from './components/SkillCenter'
+import { DiagnosticsDrawer } from './components/DiagnosticsDrawer'
 import { ThemeSwitcher } from './components/ThemeSwitcher'
 import { useAgent } from './context/AgentContext'
 import './App.css'
@@ -109,6 +110,7 @@ export default function App() {
   const [installingApp, setInstallingApp] = useState(false)
   const [reminderPanelOpen, setReminderPanelOpen] = useState(false)
   const [skillCenterOpen, setSkillCenterOpen] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [reminderOpenCount, setReminderOpenCount] = useState(0)
   const [authState, setAuthState] = useState<
     'checking' | 'need-login' | 'ready'
@@ -326,6 +328,7 @@ export default function App() {
           onOpenModelSettings={() => setShowModelSettings(true)}
           onOpenPrivacy={() => setShowAbout(true)}
           onOpenSkills={() => setSkillCenterOpen(true)}
+          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
           onInstall={installPrompt ? () => void installApp() : undefined}
           installingApp={installingApp}
           onLogout={() => void handleLogout()}
@@ -527,6 +530,7 @@ export default function App() {
         onClose={() => setPetChatOpen(false)}
       />
       <SkillCenter open={skillCenterOpen} onClose={() => setSkillCenterOpen(false)} />
+      <DiagnosticsDrawer open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
       <AboutDrawer
         open={showAbout}
         onClose={() => setShowAbout(false)}

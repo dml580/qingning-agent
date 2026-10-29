@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import time
+from collections import defaultdict, deque
 from typing import Any, Dict, Optional
 
 import bcrypt
@@ -28,6 +30,33 @@ COOKIE_SECURE = (os.getenv("AUTH_COOKIE_SECURE") or "").strip().lower() in {
     "true",
     "yes",
 }
+LOGIN_WINDOW_SECONDS = 300
+LOGIN_MAX_FAILURES = 5
+_login_failures: Dict[str, deque] = defaultdict(deque)
+
+
+def password_policy_error(password: str) -> str:
+    if len(password) < 8:
+        return "密码至少需要 8 位"
+    if password.isdigit() or password.isalpha():
+        return "密码需要同时包含字母和数字"
+    return ""
+
+
+def login_rate_limited(identity: str) -> bool:
+    now = time.monotonic()
+    failures = _login_failures[identity]
+    while failures and now - failures[0] > LOGIN_WINDOW_SECONDS:
+        failures.popleft()
+    return len(failures) >= LOGIN_MAX_FAILURES
+
+
+def record_login_failure(identity: str) -> None:
+    _login_failures[identity].append(time.monotonic())
+
+
+def clear_login_failures(identity: str) -> None:
+    _login_failures.pop(identity, None)
 
 
 def hash_password(password: str) -> str:

@@ -6,6 +6,7 @@ interface Props {
   onOpenModelSettings: () => void
   onOpenPrivacy: () => void
   onOpenSkills: () => void
+  onOpenDiagnostics: () => void
   onInstall?: () => void
   installingApp?: boolean
   onLogout: () => void
@@ -20,6 +21,7 @@ export function UserProfileMenu({
   onOpenModelSettings,
   onOpenPrivacy,
   onOpenSkills,
+  onOpenDiagnostics,
   onInstall,
   installingApp,
   onLogout,
@@ -110,6 +112,7 @@ export function UserProfileMenu({
             <span>隐私与使用说明</span>
           </button>
           <button type="button" role="menuitem" onClick={() => run(onOpenSkills)}><span className="user-menu-icon" aria-hidden>◇</span><span>能力管理</span></button>
+          <button type="button" role="menuitem" onClick={() => run(onOpenDiagnostics)}><span className="user-menu-icon" aria-hidden>⌁</span><span>开发诊断</span></button>
           {onInstall && (
             <button type="button" role="menuitem" disabled={installingApp} onClick={() => run(onInstall)}>
               <span className="user-menu-icon" aria-hidden>⇩</span>

@@ -18,6 +18,7 @@ interface Props {
   onOpenModelSettings: () => void
   onOpenPrivacy: () => void
   onOpenSkills: () => void
+  onOpenDiagnostics: () => void
   onInstall?: () => void
   installingApp?: boolean
   onLogout: () => void
@@ -43,6 +44,7 @@ export function SessionList({
   onOpenModelSettings,
   onOpenPrivacy,
   onOpenSkills,
+  onOpenDiagnostics,
   onInstall,
   installingApp,
   onLogout,
@@ -135,6 +137,7 @@ export function SessionList({
         onOpenModelSettings={onOpenModelSettings}
         onOpenPrivacy={onOpenPrivacy}
         onOpenSkills={onOpenSkills}
+        onOpenDiagnostics={onOpenDiagnostics}
         onInstall={onInstall}
         installingApp={installingApp}
         onLogout={onLogout}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 import time
 import uuid
 from contextvars import ContextVar, Token
@@ -1401,6 +1403,65 @@ async def list_agent_runs(limit: int = 30) -> List[Dict[str, Any]]:
     return runs
 
 
+async def diagnostics_overview(days: int = 7) -> Dict[str, Any]:
+    since = _now() - max(1, days) * 86400
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            """SELECT st.skill_name, st.status, st.arguments_json, st.result_json, st.created_at, st.updated_at
+            FROM agent_steps st JOIN agent_runs r ON r.id = st.run_id
+            WHERE r.user_id = ? AND st.created_at >= ?""",
+            (current_user_id(), since),
+        )
+        steps = [dict(row) for row in await cur.fetchall()]
+        usage_cur = await conn.execute(
+            """SELECT u.provider, u.model, u.ok, u.error, u.total_tokens, u.total_ms
+            FROM llm_usage u JOIN sessions s ON s.id = u.session_id
+            WHERE s.user_id = ? AND u.created_at >= ?""",
+            (current_user_id(), since),
+        )
+        usage = [dict(row) for row in await usage_cur.fetchall()]
+    skills: Dict[str, Dict[str, Any]] = {}
+    for row in steps:
+        item = skills.setdefault(row["skill_name"], {"calls": 0, "success": 0, "failed": 0, "latencies": []})
+        item["calls"] += 1
+        item["success" if row["status"] == "completed" else "failed"] += 1
+        result = json.loads(row.get("result_json") or "{}")
+        item["latencies"].append(max(0, int(result.get("duration_ms") or (row["updated_at"] - row["created_at"]) * 1000)))
+    for item in skills.values():
+        latencies = sorted(item.pop("latencies"))
+        item["success_rate"] = round(item["success"] / item["calls"], 4) if item["calls"] else 0
+        item["p95_ms"] = latencies[min(len(latencies) - 1, int(len(latencies) * .95))] if latencies else 0
+    confirmation_steps = []
+    for row in steps:
+        arguments = json.loads(row.get("arguments_json") or "{}")
+        action = str(arguments.get("action") or "")
+        if (
+            row["skill_name"] == "manage_calendar" and action in {"sync_reminder", "create_event"}
+            or row["skill_name"] == "manage_reminder" and action == "sync"
+            or row["skill_name"] == "manage_todo" and action == "delete"
+        ):
+            confirmation_steps.append(row)
+    return {
+        "days": days,
+        "skills": skills,
+        "confirmation_funnel": {
+            "requested": len(confirmation_steps),
+            "waiting": sum(1 for row in confirmation_steps if row["status"] == "waiting_confirmation"),
+            "approved": sum(1 for row in confirmation_steps if row["status"] == "completed"),
+            "rejected": sum(1 for row in confirmation_steps if row["status"] == "rejected"),
+            "execution_failed": sum(1 for row in confirmation_steps if row["status"] == "failed"),
+        },
+        "llm": {
+            "calls": len(usage),
+            "failed": sum(1 for row in usage if not row["ok"]),
+            "total_tokens": sum(int(row["total_tokens"] or 0) for row in usage),
+            "total_ms": sum(int(row["total_ms"] or 0) for row in usage),
+            "error_codes": sorted({str(row["error"])[:80] for row in usage if row["error"]}),
+        },
+    }
+
+
 # --- Current-account backup / restore ---
 
 BACKUP_SCHEMA_VERSION = 1
@@ -1444,13 +1505,16 @@ async def export_current_user_data() -> Dict[str, Any]:
             (new_id("backup"), user_id, now),
         )
         await conn.commit()
-    return {
+    result = {
         "format": "qingning-account-backup",
         "schema_version": BACKUP_SCHEMA_VERSION,
         "user_id": user_id,
         "created_at": now,
         "data": data,
     }
+    canonical = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    result["integrity_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return result
 
 
 def _validate_backup_payload(payload: Dict[str, Any], user_id: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -1460,6 +1524,12 @@ def _validate_backup_payload(payload: Dict[str, Any], user_id: str) -> Dict[str,
         raise ValueError("备份版本不受支持")
     if payload.get("user_id") != user_id:
         raise ValueError("备份所属用户与当前登录用户不一致")
+    integrity = str(payload.get("integrity_sha256") or "")
+    unsigned = {key: value for key, value in payload.items() if key != "integrity_sha256"}
+    canonical = json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if not integrity or not secrets.compare_digest(integrity, expected):
+        raise ValueError("备份完整性校验失败，文件可能已被修改")
     data = payload.get("data")
     if not isinstance(data, dict):
         raise ValueError("备份缺少 data")

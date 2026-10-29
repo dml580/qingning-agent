@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
 
@@ -97,6 +98,7 @@ class SkillRegistry:
                     "error": "该操作会写入外部日历或删除数据，请在确认卡片中批准后再执行",
                 }
         try:
+            started = time.perf_counter()
             result = await asyncio.wait_for(
                 skill.handler(arguments, context), timeout=skill.timeout_seconds
             )
@@ -107,6 +109,7 @@ class SkillRegistry:
         if not isinstance(result, dict):
             return {"ok": False, "code": "invalid_result", "error": "能力返回格式不正确"}
         result.setdefault("ok", False)
+        result.setdefault("duration_ms", round((time.perf_counter() - started) * 1000))
         return result
 
     @staticmethod

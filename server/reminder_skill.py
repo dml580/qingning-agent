@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict
 
 from calendar_sync import create_calendar_event, sync_status
@@ -18,6 +19,15 @@ async def create_reminder_entry(
     notify_browser: bool = True,
     auto_sync_calendar: bool = True,
 ) -> Dict[str, Any]:
+    # 双击发送或网络重试时，5 秒内完全相同的提醒视为同一次写入。
+    for existing in await db.list_reminders(category=category, include_done=False):
+        if (
+            existing["title"] == title.strip()
+            and existing["due_date"] == due_date
+            and (existing.get("due_time") or "") == due_time
+            and time.time() - float(existing.get("created_at") or 0) <= 5
+        ):
+            return {"item": existing, "calendar_sync": None, "deduplicated": True}
     item = await db.create_reminder(
         category=category,
         title=title.strip(),

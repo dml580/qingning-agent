@@ -137,12 +137,20 @@ export interface AccountBackup {
   schema_version: number
   user_id: string
   created_at: number
+  integrity_sha256: string
   data: Record<string, Array<Record<string, unknown>>>
 }
 
 export interface BackupStatus {
   last_export_at: number | null
   last_restore_at: number | null
+}
+
+export interface DiagnosticsOverview {
+  days: number
+  skills: Record<string, { calls: number; success: number; failed: number; success_rate: number; p95_ms: number }>
+  confirmation_funnel: { requested: number; waiting: number; approved: number; rejected: number; execution_failed: number }
+  llm: { calls: number; failed: number; total_tokens: number; total_ms: number; error_codes: string[] }
 }
 
 export const api = {
@@ -168,6 +176,7 @@ export const api = {
   exportAccountBackup: () => request<AccountBackup>('/api/data/backup'),
 
   backupStatus: () => request<BackupStatus>('/api/data/backup/status'),
+  diagnosticsOverview: () => request<DiagnosticsOverview>('/api/diagnostics/overview?days=7'),
   listTodos: (includeDone = true) => request<Array<{ id: string; title: string; note: string; due_date: string; due_time: string; done: boolean }>>(`/api/todos?include_done=${includeDone}`),
   createTodo: (body: { title: string; note?: string; due_date?: string; due_time?: string }) => request('/api/todos', { method: 'POST', body: JSON.stringify(body) }),
   patchTodo: (id: string, done: boolean) => request(`/api/todos/${id}?done=${done}`, { method: 'PATCH' }),

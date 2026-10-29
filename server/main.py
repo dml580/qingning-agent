@@ -13,12 +13,18 @@ Rules:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
+import logging
 import os
 import sqlite3
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,6 +69,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="青柠 · 生活助理 Agent", lifespan=lifespan)
+audit_logger = logging.getLogger("qingning.audit")
 
 
 @app.exception_handler(Exception)
@@ -79,6 +86,13 @@ def _cors_origins() -> list[str]:
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
     return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def _trusted_origin(origin: str) -> bool:
+    if origin in _cors_origins():
+        return True
+    parsed = urlparse(origin)
+    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
 
 
 # 公开接口：无需登录（健康检查 + 鉴权自身）。
@@ -106,6 +120,39 @@ async def auth_guard(request: Request, call_next):
         return await call_next(request)
     finally:
         db.reset_current_user(token)
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    """以 request_id 串联结构化日志，不记录正文、Cookie 或密钥。"""
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        audit_logger.info(json.dumps({
+            "event": "http_request", "request_id": request_id,
+            "method": request.method, "path": request.url.path, "status": status,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "user": hashlib.sha256(str(getattr(request.state, "user_id", "anonymous")).encode()).hexdigest()[:12],
+        }, ensure_ascii=False))
+
+
+@app.middleware("http")
+async def csrf_origin_guard(request: Request, call_next):
+    """Cookie 写请求拒绝跨站 Origin/Sec-Fetch-Site。"""
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith("/api/"):
+        if request.headers.get("sec-fetch-site") == "cross-site":
+            return JSONResponse({"detail": "已拒绝跨站请求"}, status_code=403)
+        origin = request.headers.get("origin")
+        if origin and not _trusted_origin(origin):
+            return JSONResponse({"detail": "请求来源不受信任"}, status_code=403)
+    return await call_next(request)
 
 
 class AuthPasswordBody(BaseModel):
@@ -139,9 +186,15 @@ async def api_auth_login(body: AuthPasswordBody, response: Response):
         raise HTTPException(400, "请输入用户名")
     if len(body.password.encode("utf-8")) > 72:
         raise HTTPException(400, "密码不能超过 72 字节")
+    identity = username.casefold()
+    if auth.login_rate_limited(identity):
+        raise HTTPException(429, "登录失败次数过多，请 5 分钟后再试")
     user = await db.get_user(username)
     registered = False
     if not user:
+        policy_error = auth.password_policy_error(body.password)
+        if policy_error:
+            raise HTTPException(400, policy_error)
         password_hash = await auth.hash_password_async(body.password)
         try:
             user = await db.create_user(username, password_hash)
@@ -150,7 +203,9 @@ async def api_auth_login(body: AuthPasswordBody, response: Response):
             # 并发注册同名账号时，仍须验证已创建账号的密码。
             user = await db.get_user(username)
     if not user or not await auth.verify_password_async(body.password, user["password_hash"]):
+        auth.record_login_failure(identity)
         raise HTTPException(401, "用户名或密码不正确")
+    auth.clear_login_failures(identity)
     sid = await auth.start_session(user["id"])
     auth.set_session_cookie(response, sid)
     return {"ok": True, "user_id": user["id"], "registered": registered}
@@ -454,6 +509,13 @@ async def api_review_image(body: ReviewImageBody):
             "related": False,
             "reason": "只支持 JPG / PNG / WebP 图片。",
         }
+    try:
+        head = base64.b64decode(body.image_base64[:128], validate=False)[:16]
+    except Exception:
+        head = b""
+    signatures = {"image/jpeg": (b"\xff\xd8\xff",), "image/png": (b"\x89PNG\r\n\x1a\n",), "image/webp": (b"RIFF",), "image/gif": (b"GIF87a", b"GIF89a")}
+    if not any(head.startswith(signature) for signature in signatures[mime]):
+        return {"ok": False, "related": False, "reason": "文件内容与图片格式不一致，请重新选择有效图片。"}
     result = await review_document_image(
         body.image_base64,
         scenario_id=body.scenario_id,
@@ -533,6 +595,11 @@ async def api_list_memory():
 async def api_usage_metrics(days: int = Query(7, ge=1, le=90)):
     """近 N 天 Token 用量与耗时聚合，供评测与成本观察使用。"""
     return await db.summarize_llm_usage(days=days)
+
+
+@app.get("/api/diagnostics/overview")
+async def api_diagnostics_overview(days: int = Query(7, ge=1, le=90)):
+    return await db.diagnostics_overview(days=days)
 
 
 @app.get("/api/agent/runs")
