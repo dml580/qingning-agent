@@ -36,21 +36,15 @@
 | `get_weather` | 城市天气与预报 |
 | `get_current_time` | 当前日期、时间与星期 |
 
-## 界面预览
+## 运行演示
+
+一段完整的真实主链路：进入生活助理 Agent，在聊天中创建提醒，自动打开提醒面板，并在刷新后验证提醒仍然存在。
 
 <p align="center">
-  <img src="docs/screenshots/03-docs-chat.jpg" alt="青柠 Agent：流式推流、Markdown 与工具调用" width="900" />
+  <a href="docs/demo/qingning-agent-demo.webm">▶ 播放青柠 Agent 完整运行视频</a>
 </p>
 
-| 生活助理 Agent（多模态 · RAG） | 生活提醒（任务看板 / SQLite） |
-|:---:|:---:|
-| <img src="docs/screenshots/01-docs-analysis.jpg" alt="青柠生活助理 Agent" width="420" /> | <img src="docs/screenshots/02-reminders.jpg" alt="生活提醒看板" width="420" /> |
-
-<p align="center">
-  <img src="docs/screenshots/04-model-settings.jpg" alt="模型设置：多提供商，Key 仅存本机" width="360" />
-  <br />
-  <sub>模型设置：多提供商可插拔；API Key 脱敏展示，只写本机后端</sub>
-</p>
+> 视频由 Playwright 直接录制真实 e2e 流程，没有使用静态页面或接口 Mock。
 
 ## 技术
 
@@ -148,7 +142,7 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 | 豆包 401/403 | Key 或接入点 ID 错误；`ARK_MODEL` 一般是 `ep-` 开头 |
 | 改了 `.env` 仍用旧模型 | 若用过「模型设置」，运行时文件优先；可在设置里「恢复为环境变量」 |
 
-密钥与 `server/data/` **不要提交 Git**。仓库：[dml580/qingning-workbench](https://github.com/dml580/qingning-workbench)。
+密钥与 `server/data/` **不要提交 Git**。仓库：[dml580/qingning-agent](https://github.com/dml580/qingning-agent)。
 
 ## 测试与评测
 
