@@ -41,7 +41,7 @@
 2 分钟完整演示：登录、聊天创建提醒、日历敏感操作确认、上传脱敏文档、结构化详情、RAG 引用与 Agent 执行计划。
 
 <p align="center">
-  <a href="docs/demo/qingning-agent-demo.webm">▶ 播放青柠 Agent 完整运行视频</a>
+  <a href="docs/demo/qingning-agent-demo.mp4">▶ 播放青柠 Agent 完整运行视频（MP4）</a>
 </p>
 
 > 登录、提醒、日历确认、SQLite、RAG 与 Agent 计划均运行真实代码；演示后端仅对固定脱敏图片提供确定性 OCR，避免外部视觉模型波动。运行 `cd web && npm run demo:record` 可重复录制。
