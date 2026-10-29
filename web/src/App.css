@@ -165,6 +165,22 @@
 .skill-row span, .skill-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.skill-row small { color: var(--faint); text-align: right; }.skill-row .is-done { text-decoration: line-through; opacity: .6; }
 .skill-row-block { align-items: flex-start; flex-direction: column; gap: 5px; }.skill-row-block small { text-align: left; line-height: 1.5; }
 .skill-empty { padding: 32px 12px; text-align: center; color: var(--faint); }
+.skill-error { margin: 12px 20px 0; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--danger) 8%, var(--panel-2)); color: var(--text); font-size: 13px; }
+.danger-link { color: var(--danger) !important; }
+.skill-doc-row { position: relative; width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.skill-doc-row:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--hover); }
+.skill-doc-title { width: 100%; display: flex; align-items: center; gap: 8px; }
+.skill-doc-title em { flex: 0 0 auto; padding: 2px 6px; border-radius: 4px; background: var(--hover); color: var(--muted); font-size: 10px; font-style: normal; }
+.skill-row-action { align-self: flex-end; color: var(--accent); font-size: 12px; }
+.skill-subdialog { position: fixed; z-index: 190; top: 50%; left: 50%; width: min(480px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; transform: translate(-50%, -50%); padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 28px 90px rgba(0,0,0,.58); }
+.skill-subdialog h3 { margin: 4px 0 10px; font-size: 18px; }.skill-subdialog p { color: var(--muted); line-height: 1.6; }
+.skill-subdialog label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }.skill-subdialog textarea { min-height: 110px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); padding: 10px; font: inherit; }
+.confirm-kicker { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: 0; }
+.confirm-card { border-top: 3px solid var(--warn); }
+.skill-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.skill-doc-detail { width: min(620px, calc(100vw - 32px)); }.skill-doc-detail > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }.skill-doc-detail > header h3 { overflow-wrap: anywhere; }
+.doc-summary { padding: 12px; border-radius: 8px; background: var(--panel-2); color: var(--text) !important; }
+.doc-detail-group { padding: 12px 0; border-top: 1px solid var(--border-soft); }.doc-detail-group > strong { font-size: 12px; }.doc-detail-group ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); line-height: 1.6; font-size: 13px; }
 .reminder-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 14px; }
 .reminder-status-row .reminder-notify-bar { margin: 0; min-height: 34px; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel-2); }
 .reminder-progress { gap: 8px; }.reminder-progress-card { min-height: 72px; padding: 12px 14px; }.reminder-progress-card strong { font-size: 22px; }

@@ -175,7 +175,7 @@ export const api = {
   listMemory: () => request<Record<string, string>>('/api/memory'),
   putMemory: (key: string, value: string) => request(`/api/memory/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ key, value }) }),
   deleteMemory: (key: string) => request(`/api/memory/${encodeURIComponent(key)}`, { method: 'DELETE' }),
-  listDocumentCaptures: () => request<Array<{ id: string; kind: string; title: string; summary: string; created_at: number }>>('/api/document-captures?limit=30'),
+  listDocumentCaptures: () => request<Array<{ id: string; kind: string; title: string; summary: string; created_at: number; payload: Record<string, unknown> }>>('/api/document-captures?limit=30'),
 
   restoreAccountBackup: (backup: AccountBackup, confirmUsername: string) =>
     request<{ ok: boolean; counts: Record<string, number>; restored_at: number }>(

@@ -38,13 +38,13 @@
 
 ## 运行演示
 
-一段完整的真实主链路：进入生活助理 Agent，在聊天中创建提醒，自动打开提醒面板，并在刷新后验证提醒仍然存在。
+2 分钟完整演示：登录、聊天创建提醒、日历敏感操作确认、上传脱敏文档、结构化详情、RAG 引用与 Agent 执行计划。
 
 <p align="center">
   <a href="docs/demo/qingning-agent-demo.webm">▶ 播放青柠 Agent 完整运行视频</a>
 </p>
 
-> 视频由 Playwright 直接录制真实 e2e 流程，没有使用静态页面或接口 Mock。
+> 登录、提醒、日历确认、SQLite、RAG 与 Agent 计划均运行真实代码；演示后端仅对固定脱敏图片提供确定性 OCR，避免外部视觉模型波动。运行 `cd web && npm run demo:record` 可重复录制。
 
 ## 技术
 
@@ -152,6 +152,8 @@ cd server && python3 -m unittest test_agent_core.py
 
 # Agent / RAG 离线评测
 cd server && python3 eval_agent.py
+
+# 当前离线基线：30 条工具选择、12 份脱敏 RAG 文档、确认/拒绝与工具失败边界
 
 # 前端构建
 cd web && npm run build

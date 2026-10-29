@@ -1248,7 +1248,7 @@ def heuristic_tool_calls(
             }
         )
 
-    if any(k in text for k in ("待办", "任务清单", "任务列表")):
+    if any(k in text for k in ("待办", "任务清单", "任务列表", "任务完成", "删除任务")):
         if any(k in text for k in ("查看", "哪些", "列表", "清单")):
             todo_args: Dict[str, Any] = {"action": "list"}
         elif any(k in text for k in ("完成待办", "待办完成", "任务完成")):
@@ -1285,9 +1285,6 @@ def heuristic_tool_calls(
     elif "记住" in text and "偏好" in text:
         value = text.split("记住", 1)[-1].strip(" ，。")
         calls.append({"id": "local_memory", "name": "manage_memory", "arguments": {"action": "set", "key": "preference", "value": value}})
-
-    if module_id != "docs":
-        return calls[:3]
 
     reminder_hit = any(
         k in text

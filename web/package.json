@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "demo:record": "playwright test --config=playwright.demo.config.ts --project=chromium --workers=1"
   },
   "dependencies": {
     "react": "^19.3.1",
