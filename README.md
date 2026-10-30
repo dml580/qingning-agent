@@ -60,7 +60,7 @@
 青柠/
 ├── web/          React + TypeScript
 ├── server/       Python FastAPI（含本机 data/，已 gitignore）
-└── docs/         路线图、虚拟列表对比说明
+└── docs/         评测指标与完整演示视频
 ```
 
 ## 本地运行
@@ -201,12 +201,8 @@ cd web && npm run test:e2e
 
 ## 文档
 
-- [待办与路线图](docs/待办与路线图.md)
-- [面试话术](docs/面试话术.md)
-- [AI 前端演示检查清单](docs/AI前端-演示检查清单.md)
-- [虚拟列表对比截图](docs/virtual-list-compare.md)
-- [浏览器兼容](docs/浏览器兼容.md)
+- [评测指标](docs/evaluation-metrics.md)
 
 ## 后续路线
 
-详见 [待办与路线图](docs/待办与路线图.md)。当前优先补充真实脱敏评测集、能力管理交互和本地安装验收；公网部署暂缓。
+当前优先补充真实脱敏评测集、能力管理交互和本地安装验收；公网部署暂缓。
