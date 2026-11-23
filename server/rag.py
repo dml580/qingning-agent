@@ -130,8 +130,11 @@ def retrieve_chunks(
     query_extra: str = "",
     top_k: int = 4,
     min_doc_chars: int = 180,
+    strategy: str = "hybrid",
 ) -> Dict[str, Any]:
-    """多路召回（向量 + BM25）→ RRF 融合 → 词面覆盖度重排。"""
+    """检索片段；strategy 用于离线对比 dense、bm25 与 hybrid。"""
+    if strategy not in {"dense", "bm25", "hybrid"}:
+        raise ValueError("strategy 只能是 dense、bm25 或 hybrid")
     doc = (document or "").strip()
     # 去掉照片标记
     doc = re.sub(r"\n*【附文书照片】[\s\S]*$", "", doc).strip()
@@ -188,7 +191,12 @@ def retrieve_chunks(
     bm25_ranking = _rank_indices(bm25, recall_k)
 
     # 4. 融合
-    fused = _rrf_fuse([dense_ranking, bm25_ranking])
+    rankings = {
+        "dense": [dense_ranking],
+        "bm25": [bm25_ranking],
+        "hybrid": [dense_ranking, bm25_ranking],
+    }[strategy]
+    fused = _rrf_fuse(rankings)
     if not fused:
         return {
             "enabled": False,
@@ -230,10 +238,15 @@ def retrieve_chunks(
 
     return {
         "enabled": True,
-        "reason": (
-            f"向量召回 {len(dense_ranking)} 条 + BM25 召回 {len(bm25_ranking)} 条，"
-            f"RRF 融合后重排取前 {len(out_chunks)} 条"
-        ),
+        "reason": {
+            "dense": f"仅向量召回，重排取前 {len(out_chunks)} 条",
+            "bm25": f"仅 BM25 召回，重排取前 {len(out_chunks)} 条",
+            "hybrid": (
+                f"向量召回 {len(dense_ranking)} 条 + BM25 召回 {len(bm25_ranking)} 条，"
+                f"RRF 融合后重排取前 {len(out_chunks)} 条"
+            ),
+        }[strategy],
+        "strategy": strategy,
         "chunks": out_chunks,
         "context_block": "\n".join(lines).strip(),
     }

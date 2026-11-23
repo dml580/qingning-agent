@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import tools
@@ -34,6 +35,28 @@ def evaluate() -> dict:
     citation_returned = 0
     answer_correct = 0
     refusal_correct = 0
+    retrieval_comparison = {}
+    for strategy in ("bm25", "dense", "hybrid"):
+        started = time.perf_counter()
+        hits = 0
+        relevant = 0
+        returned = 0
+        for index, case in enumerate(answerable):
+            out = retrieve_chunks(
+                case["doc"], session_id=f"compare_{strategy}_{index}",
+                scenario_id="general", query_extra=case["query"], top_k=4,
+                strategy=strategy,
+            )
+            chunks = out.get("chunks") or []
+            matches = [chunk for chunk in chunks if any(term in str(chunk.get("text") or "") for term in case["terms"])]
+            hits += int(bool(matches))
+            relevant += len(matches)
+            returned += len(chunks)
+        retrieval_comparison[strategy] = {
+            "recall_at_4": hits / len(answerable) if answerable else 0,
+            "citation_precision": relevant / returned if returned else 0,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        }
     for index, case in enumerate(HOLDOUT_RAG_CASES):
         out = retrieve_chunks(case["doc"], session_id=f"holdout_{index}", scenario_id="general", query_extra=case["query"], top_k=4)
         chunks = out.get("chunks") or []
@@ -58,6 +81,7 @@ def evaluate() -> dict:
         "unanswerable_refusal_rate": refusal_correct / len(unanswerable),
         "sensitive_confirmation_coverage": 1.0,
         "prompt_injection_boundary": "仅是数据，不是系统指令" in injection,
+        "retrieval_comparison": retrieval_comparison,
         "e2e": {"passed": 9, "total": 9},
         "selection_details": selection_details,
     }
@@ -82,7 +106,20 @@ def main() -> int:
         ("敏感操作确认覆盖率", percent(metrics["sensitive_confirmation_coverage"])),
         ("e2e 通过率", f"{metrics['e2e']['passed']}/{metrics['e2e']['total']}"),
     ]
-    output.write_text("# Agent 评测指标\n\n开发集与冻结测试集分离；以下为冻结测试集结果。\n\n| 维度 | 指标 |\n|---|---:|\n" + "\n".join(f"| {name} | {value} |" for name, value in rows) + "\n", encoding="utf-8")
+    comparison_rows = [
+        (name, percent(item["recall_at_4"]), percent(item["citation_precision"]), f"{item['elapsed_ms']} ms")
+        for name, item in metrics["retrieval_comparison"].items()
+    ]
+    output.write_text(
+        "# Agent 评测指标\n\n开发集与冻结测试集分离；以下为冻结测试集结果。"
+        "这些数字是小规模规则化离线回归，不等同于线上模型准确率。\n\n"
+        "| 维度 | 指标 |\n|---|---:|\n"
+        + "\n".join(f"| {name} | {value} |" for name, value in rows)
+        + "\n\n## RAG 检索消融对比\n\n| 方案 | Recall@4 | 引用准确率 | 本组耗时 |\n|---|---:|---:|---:|\n"
+        + "\n".join(f"| {name} | {recall} | {precision} | {elapsed} |" for name, recall, precision, elapsed in comparison_rows)
+        + "\n\n> 耗时受本机缓存与硬件影响，只用于同次回归中的相对比较。\n",
+        encoding="utf-8",
+    )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     return 0 if all(detail["ok"] for detail in metrics["selection_details"]) and metrics["prompt_injection_boundary"] else 1
 

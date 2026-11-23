@@ -4,11 +4,27 @@ import asyncio
 import unittest
 import uuid
 import copy
+from collections import Counter
 
 from internal_skills import InternalSkill, SkillContext, SkillRegistry
 import db
 from tools import SKILL_REGISTRY, build_tool_context_block, parse_tool_arguments
 from reminder_skill import create_reminder_entry
+
+
+class ApiContractTests(unittest.TestCase):
+    def test_api_method_path_pairs_are_unique(self):
+        """防止同一路径被重复声明，导致后续维护时修改错处理器。"""
+        from main import app
+
+        pairs = [
+            (method, route.path)
+            for route in app.routes
+            for method in (getattr(route, "methods", None) or set())
+            if route.path.startswith("/api/")
+        ]
+        duplicates = [pair for pair, count in Counter(pairs).items() if count > 1]
+        self.assertEqual(duplicates, [])
 
 
 class SkillRegistryTests(unittest.IsolatedAsyncioTestCase):

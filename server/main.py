@@ -581,16 +581,6 @@ async def api_delete_memory(key: str):
     return {"ok": await db.delete_memory(key)}
 
 
-@app.get("/api/todos")
-async def api_list_todos(include_done: bool = False):
-    return await db.list_todos(include_done=include_done)
-
-
-@app.get("/api/memory")
-async def api_list_memory():
-    return await db.list_memory()
-
-
 @app.get("/api/metrics/usage")
 async def api_usage_metrics(days: int = Query(7, ge=1, le=90)):
     """近 N 天 Token 用量与耗时聚合，供评测与成本观察使用。"""

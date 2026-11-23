@@ -54,6 +54,20 @@
 - 模型：OpenAI 兼容 Chat Completions（豆包 / DeepSeek / 硅基流动 / 自定义等）
 - 评测：Python `unittest` + Agent eval + Playwright e2e
 
+## 架构
+
+```text
+React / PWA
+  ├─ SSE 状态机、seq 去重、确认卡、执行计划
+  └─ 提醒、能力管理、文档详情、开发诊断
+             │ 同源 /api
+             ▼
+FastAPI ── 鉴权、CSRF 来源校验、X-Request-ID
+  ├─ Agent 编排 ── 10 个内部 Skill ── 日历 / 天气 / 搜索
+  ├─ 混合 RAG ── BM25 + 向量召回 + RRF 重排
+  └─ SQLite ── 用户、会话、提醒、记忆、文档与运行轨迹
+```
+
 ## 目录
 
 ```
@@ -146,6 +160,14 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 ## 测试与评测
 
+核心验证可在项目根目录一键执行：
+
+```bash
+./scripts/verify.sh
+```
+
+GitHub Actions 会在每次 push 和 pull request 自动执行核心验证与 Playwright 回归。
+
 ```bash
 # 后端 Skill / 安全边界
 cd server && python3 -m unittest test_agent_core.py
@@ -174,6 +196,8 @@ cd web && npm run test:e2e
 ## 评测指标
 
 开发回归集与冻结测试集分开维护。冻结集覆盖口语/错别字、矛盾日期、多工具冲突、负例、提示注入、无答案与干扰片段；详见 [评测指标](docs/evaluation-metrics.md)。这些数字是规则化离线回归结果，不等同于线上模型准确率。
+
+评测同时输出仅 BM25、仅向量与混合检索的消融对比，记录 Recall@4、引用准确率和同次运行耗时，解释混合检索是否确实带来收益。
 
 ## 可观测性与安全
 
